@@ -1,0 +1,8 @@
+node_modules/
+dist/
+backend/.venv/
+__pycache__/
+.env
+.env.*
+data_source.zip
+crawled_notices/

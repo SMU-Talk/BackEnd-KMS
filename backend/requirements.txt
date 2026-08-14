@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+pydantic
+langchain
+langchain-community
+langchain-core
+langchain-huggingface
+langchain-openai
+faiss-cpu
+sentence-transformers
+langchain-text-splitters
