@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { askChat, sendFeedback } from "../services/api";
+import { askChat, getBriefing, sendFeedback } from "../services/api";
+import CampusMapModal from "./CampusMapModal";
 
 const suggestions = [
   "기숙사 신청 일정 알려줘",
@@ -52,11 +53,11 @@ function AnswerFeedback({ messageId, onFeedback }) {
   );
 }
 
-export default function ChatPanel({ filters }) {
-  const [messages, setMessages] = useState([]);
+export default function ChatPanel({ filters, messages, setMessages, conversationId, setConversationId }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [conversationId, setConversationId] = useState(() => crypto.randomUUID());
+  const [briefingLoading, setBriefingLoading] = useState(false);
+  const [showMap, setShowMap] = useState(false);
 
   const send = async (value = input) => {
     const message = value.trim();
@@ -93,12 +94,34 @@ export default function ChatPanel({ filters }) {
     setConversationId(crypto.randomUUID());
   };
 
+  const showBriefing = async () => {
+    if (briefingLoading) return;
+    setBriefingLoading(true);
+    try {
+      const { summary, notices } = await getBriefing();
+      setMessages((current) => [
+        ...current,
+        { role: "assistant", text: summary, citations: notices || [] },
+      ]);
+    } catch (error) {
+      setMessages((current) => [
+        ...current,
+        { role: "assistant", text: `브리핑을 가져오지 못했습니다: ${error.message}`, citations: [] },
+      ]);
+    } finally {
+      setBriefingLoading(false);
+    }
+  };
+
   return (
     <main className="chat-panel">
       <header className="chat-header">
         <span>🤖</span>
         <div><b>학과 공지 AI 어시스턴트</b><small>검토된 학교 공지를 검색합니다</small></div>
-        <i>● 응답 가능</i><button onClick={reset}>초기화</button>
+        <i>● 응답 가능</i>
+        <button onClick={showBriefing} disabled={briefingLoading}>{briefingLoading ? "불러오는 중..." : "🌅 아침 브리핑"}</button>
+        <button onClick={() => setShowMap(true)}>🗺️ 학교 맵</button>
+        <button onClick={reset}>초기화</button>
       </header>
       <section className="messages" aria-live="polite">
         {!messages.length && <div className="welcome"><strong>🎓</strong><h1>학과 공지 AI에 오신 것을 환영합니다!</h1><p>학교 공지와 규정을 바탕으로 답변하고, 원문 출처를 함께 보여드립니다.</p><div>{suggestions.map((item) => <button key={item} onClick={() => send(item)}>{item}</button>)}</div></div>}
@@ -106,6 +129,7 @@ export default function ChatPanel({ filters }) {
         {loading && <article className="message assistant"><span>🤖</span><div className="typing">답변을 준비하고 있습니다...</div></article>}
       </section>
       <form className="chat-input" onSubmit={(event) => { event.preventDefault(); send(); }}><textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); send(); } }} placeholder="학교 공지사항에 대해 질문해 보세요!" rows="1" /><button disabled={!input.trim() || loading} aria-label="질문 전송">➤</button></form>
+      {showMap && <CampusMapModal onClose={() => setShowMap(false)} />}
     </main>
   );
 }

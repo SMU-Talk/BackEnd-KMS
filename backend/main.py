@@ -201,6 +201,7 @@ class RAGService:
         self.vectorstore = None
         self.llm = None
         self.startup_error: Optional[str] = None
+        self.notice_index: list[dict] = []
 
     def load(self) -> None:
         api_key = os.getenv("OPENAI_API_KEY")
@@ -227,6 +228,7 @@ class RAGService:
                 model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
                 temperature=0.2,
             )
+            self.notice_index = build_notice_index(self.vectorstore)
             self.startup_error = None
         except Exception as error:  # Do not expose internal paths or secrets to callers.
             self.startup_error = f"RAG 초기화에 실패했습니다: {type(error).__name__}"
@@ -324,6 +326,26 @@ def unique_citations(documents) -> list[dict]:
             }
         )
         seen.add(key)
+    return citations
+
+
+def build_notice_index(vectorstore: FAISS) -> list[dict]:
+    """Deduplicated, most-recent-first notice list built once at startup for search/briefing."""
+    citations, seen = [], set()
+    for document in vectorstore.docstore._dict.values():
+        metadata = document.metadata
+        key = metadata.get("url") or metadata.get("title")
+        if not key or key in seen:
+            continue
+        citations.append(
+            {
+                "title": metadata.get("title", "학교 공지"),
+                "url": metadata.get("url"),
+                "date": metadata.get("date"),
+            }
+        )
+        seen.add(key)
+    citations.sort(key=lambda item: parse_notice_date(item["date"]) or date.min, reverse=True)
     return citations
 
 
@@ -485,6 +507,50 @@ async def chat(data: ChatRequest, request: Request):
         "answer": answer,
         "citations": citations,
     }
+
+
+@app.get("/api/search")
+async def search_notices(request: Request, q: str = ""):
+    await require_rate_limit(request)
+    query = q.strip().lower()
+    if not query:
+        return {"results": []}
+    results = [item for item in rag.notice_index if query in item["title"].lower()]
+    return {"results": results[:20]}
+
+
+@app.get("/api/briefing")
+async def briefing(request: Request):
+    await require_rate_limit(request)
+    check_daily_request_budget()
+    if not rag.ready:
+        raise HTTPException(status_code=503, detail=rag.startup_error or "AI 서비스를 준비 중입니다.")
+
+    recent = rag.notice_index[:5]
+    if not recent:
+        return {"summary": "표시할 공지가 아직 없습니다.", "notices": []}
+
+    listing = "\n".join(f"- [{item['date'] or '날짜 미상'}] {item['title']}" for item in recent)
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                """다음은 최근 등록된 학교 공지 제목 목록입니다. 학생에게 오늘의 브리핑을 3~4문장의
+친근한 한국어 Markdown으로 요약해 주세요. 목록에 없는 내용은 추측하지 말고, 출처는 앱이 별도로
+표시하므로 링크를 만들지 마세요.
+
+[최근 공지]
+{listing}""",
+            ),
+            ("user", "오늘의 공지를 요약해줘"),
+        ]
+    )
+    try:
+        summary = (prompt | rag.llm).invoke({"listing": listing}).content
+    except Exception:
+        raise HTTPException(status_code=500, detail="브리핑 생성에 실패했습니다. 잠시 후 다시 시도해 주세요.") from None
+
+    return {"summary": str(summary), "notices": recent}
 
 
 @app.post("/api/feedback", status_code=status.HTTP_201_CREATED)
