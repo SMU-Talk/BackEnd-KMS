@@ -96,14 +96,3 @@ export async function searchNotices(query) {
   const params = new URLSearchParams({ q: query });
   return request(`/search?${params.toString()}`);
 }
-
-export async function getBriefing() {
-  if (USE_MOCK) {
-    await wait(300);
-    return {
-      summary: "목 데이터 모드입니다. 실제 브리핑은 백엔드에 연결하면 최신 공지를 요약해 보여드려요.",
-      notices: [],
-    };
-  }
-  return request("/briefing");
-}

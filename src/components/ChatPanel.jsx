@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { askChat, getBriefing, sendFeedback } from "../services/api";
+import { askChat, sendFeedback } from "../services/api";
 import CampusMapModal from "./CampusMapModal";
 
 const suggestions = [
@@ -53,10 +53,9 @@ function AnswerFeedback({ messageId, onFeedback }) {
   );
 }
 
-export default function ChatPanel({ filters, messages, setMessages, conversationId, setConversationId }) {
+export default function ChatPanel({ filters, messages, setMessages, conversationId, setConversationId, onReset }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [briefingLoading, setBriefingLoading] = useState(false);
   const [showMap, setShowMap] = useState(false);
 
   const send = async (value = input) => {
@@ -90,27 +89,12 @@ export default function ChatPanel({ filters, messages, setMessages, conversation
   };
 
   const reset = () => {
+    if (onReset) {
+      onReset();
+      return;
+    }
     setMessages([]);
     setConversationId(crypto.randomUUID());
-  };
-
-  const showBriefing = async () => {
-    if (briefingLoading) return;
-    setBriefingLoading(true);
-    try {
-      const { summary, notices } = await getBriefing();
-      setMessages((current) => [
-        ...current,
-        { role: "assistant", text: summary, citations: notices || [] },
-      ]);
-    } catch (error) {
-      setMessages((current) => [
-        ...current,
-        { role: "assistant", text: `브리핑을 가져오지 못했습니다: ${error.message}`, citations: [] },
-      ]);
-    } finally {
-      setBriefingLoading(false);
-    }
   };
 
   return (
@@ -119,8 +103,7 @@ export default function ChatPanel({ filters, messages, setMessages, conversation
         <span>🤖</span>
         <div><b>학과 공지 AI 어시스턴트</b><small>검토된 학교 공지를 검색합니다</small></div>
         <i>● 응답 가능</i>
-        <button onClick={showBriefing} disabled={briefingLoading}>{briefingLoading ? "불러오는 중..." : "🌅 아침 브리핑"}</button>
-        <button onClick={() => setShowMap(true)}>🗺️ 학교 맵</button>
+        <button className="map-button" onClick={() => setShowMap(true)}>🗺️ 학교 맵</button>
         <button onClick={reset}>초기화</button>
       </header>
       <section className="messages" aria-live="polite">

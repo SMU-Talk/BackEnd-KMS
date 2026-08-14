@@ -45,29 +45,52 @@ function MajorEntry({ item }) {
 export default function Sidebar({
   user,
   catalog,
-  filters,
-  onFiltersChange,
   onLogout,
   onSearchResult,
+  conversations,
+  activeConversationId,
+  onNewConversation,
+  onSelectConversation,
+  onDeleteConversation,
 }) {
   const [openDepartment, setOpenDepartment] = useState(null);
-
-  const toggleTag = (tag) => {
-    const tags = filters.tags.includes(tag)
-      ? filters.tags.filter((item) => item !== tag)
-      : [...filters.tags, tag];
-    onFiltersChange({ ...filters, tags });
-  };
 
   return (
     <aside className="sidebar">
       <header className="sidebar-header">
-        <span className="brand-mark">🎓</span>
+        <span className="brand-mark">🏫</span>
         <b>
-          Uni<span>Notice</span> AI
+          SMU<span>ChatBot</span>
         </b>
       </header>
       <div className="sidebar-content">
+        <section className="history-section">
+          <button className="new-chat-button" onClick={onNewConversation}>
+            + 새 대화
+          </button>
+          <h2>대화 기록</h2>
+          <div className="history-list">
+            {!conversations.length && <p className="history-empty">아직 대화 기록이 없어요.</p>}
+            {conversations.map((conversation) => (
+              <div
+                className={`history-item ${conversation.id === activeConversationId ? "active" : ""}`}
+                key={conversation.id}
+              >
+                <button className="history-item-button" onClick={() => onSelectConversation(conversation.id)}>
+                  {conversation.title}
+                </button>
+                <button
+                  className="history-item-delete"
+                  aria-label="대화 삭제"
+                  onClick={() => onDeleteConversation(conversation.id)}
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
+
         <NoticeSearch onResult={onSearchResult} />
 
         <section>
@@ -101,7 +124,7 @@ export default function Sidebar({
         <span className="avatar">{user.name[0]}</span>
         <div>
           <b>{user.name}</b>
-          <small>로컬 개발 모드</small>
+          <small>{user.id}</small>
         </div>
         <button onClick={onLogout} aria-label="로그아웃">
           ⇥

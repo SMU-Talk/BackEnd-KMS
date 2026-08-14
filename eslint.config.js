@@ -8,6 +8,7 @@ export default defineConfig([
   globalIgnores(['dist', 'backend/.venv']),
   {
     files: ['**/*.{js,jsx}'],
+    ignores: ['*.config.js'],
     extends: [
       js.configs.recommended,
       reactHooks.configs.flat.recommended,
@@ -16,6 +17,13 @@ export default defineConfig([
     languageOptions: {
       globals: globals.browser,
       parserOptions: { ecmaFeatures: { jsx: true } },
+    },
+  },
+  {
+    files: ['*.config.js'],
+    extends: [js.configs.recommended],
+    languageOptions: {
+      globals: globals.node,
     },
   },
 ])

@@ -57,7 +57,7 @@ export default function LoginPage({ onLogin, onSignup }) {
   return (
     <main className="login-page">
       <section className="login-card">
-        <div className="login-brand"><span className="brand-mark">🎓</span><strong>Uni<br /><em>Notice AI</em></strong><p>학교 공지를 AI가<br />빠르게 찾아드립니다.</p></div>
+        <div className="login-brand"><span className="brand-mark">🏫</span><strong>SMU<br /><em>ChatBot</em></strong><p>학교 공지를 AI가<br />빠르게 찾아드립니다.</p></div>
 
         {mode === "login" ? (
           <form className="login-form" onSubmit={submitLogin}>

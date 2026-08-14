@@ -1,4 +1,4 @@
-# UniNotice AI
+# SMU ChatBot
 
 검토된 대학 공지를 검색해 답변과 원문 출처를 함께 보여주는 RAG 기반 웹 서비스입니다.
 

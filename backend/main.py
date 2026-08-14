@@ -427,7 +427,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="UniNotice AI API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="SMU ChatBot API", version="1.0.0", lifespan=lifespan)
 
 allowed_origins = [
     origin.strip()
