@@ -1,0 +1,15 @@
+node_modules
+dist
+.git
+.venv
+backend/.venv
+backend/.env
+backend/campus.db
+crawled_notices
+data_source.zip
+*.zip
+.env
+.env.local
+.env.production
+__pycache__
+*.pyc

@@ -121,4 +121,8 @@ npm.cmd run dev
 
 ## 배포
 
-Docker 없이 AWS Elastic Beanstalk Python 환경에 배포하는 방법은 [DEPLOY_AWS.md](./DEPLOY_AWS.md)를 참고하세요.
+- **무료로 배포**(추천): Google Cloud Run + Turso + Vercel 조합은 [DEPLOY_CLOUDRUN.md](./DEPLOY_CLOUDRUN.md)를 참고하세요. 회원 DB는 `backend/db.py`를 통해 Turso(원격 SQLite 호환)에 저장되므로 Cloud Run의 콜드스타트에도 데이터가 유지됩니다.
+- Oracle Cloud Always Free VM으로 배포하는 방법(가입이 된다면 완전 상시 서버)은 [DEPLOY_ORACLE.md](./DEPLOY_ORACLE.md)를 참고하세요.
+- AWS Elastic Beanstalk(Docker 없이)로 배포하는 방법은 [DEPLOY_AWS.md](./DEPLOY_AWS.md)를 참고하세요. EC2 인스턴스 과금이 발생할 수 있습니다.
+
+로컬 개발(`VITE_USE_MOCK=false`로 `run-backend.ps1` 실행)은 `TURSO_DATABASE_URL`을 설정하지 않는 한 계속 로컬 `campus.db` 파일을 그대로 사용합니다.

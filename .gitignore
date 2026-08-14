@@ -41,3 +41,6 @@ backend/campus.db
 *.njsproj
 *.sln
 *.sw?
+
+.vercel
+.env*

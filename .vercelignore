@@ -1,0 +1,13 @@
+node_modules
+dist
+backend
+crawled_notices
+data_source.zip
+*.zip
+campus.db
+.git
+requirements.txt
+Procfile
+deploy
+Dockerfile
+.dockerignore

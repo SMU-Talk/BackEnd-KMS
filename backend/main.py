@@ -7,7 +7,6 @@ It has no connection to the university's private academic systems or SSO.
 import asyncio
 import os
 import re
-import sqlite3
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -28,6 +27,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field, field_validator
 
 from auth import hash_password, verify_password
+from db import fetchall, fetchone, session
 
 BASE_DIR = Path(__file__).resolve().parent
 DATABASE_PATH = BASE_DIR / "campus.db"
@@ -349,30 +349,38 @@ def build_notice_index(vectorstore: FAISS) -> list[dict]:
     return citations
 
 
+TABLE_DEFINITIONS = (
+    """
+    CREATE TABLE IF NOT EXISTS chat_feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id TEXT NOT NULL,
+        rating TEXT NOT NULL CHECK (rating IN ('up', 'down')),
+        comment TEXT,
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS chat_audit (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        question TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS daily_request_count (
+        day TEXT PRIMARY KEY,
+        count INTEGER NOT NULL DEFAULT 0
+    )
+    """,
+)
+
+
 def initialize_storage() -> None:
-    with sqlite3.connect(DATABASE_PATH) as connection:
-        connection.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS chat_feedback (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                message_id TEXT NOT NULL,
-                rating TEXT NOT NULL CHECK (rating IN ('up', 'down')),
-                comment TEXT,
-                created_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS chat_audit (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                message_id TEXT NOT NULL,
-                conversation_id TEXT NOT NULL,
-                question TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS daily_request_count (
-                day TEXT PRIMARY KEY,
-                count INTEGER NOT NULL DEFAULT 0
-            );
-            """
-        )
+    with session(DATABASE_PATH) as connection:
+        for statement in TABLE_DEFINITIONS:
+            connection.execute(statement)
 
 
 async def require_rate_limit(request: Request) -> None:
@@ -398,15 +406,13 @@ def check_daily_request_budget() -> None:
     if DAILY_REQUEST_BUDGET <= 0:
         return
     today = date.today().isoformat()
-    with sqlite3.connect(DATABASE_PATH) as connection:
+    with session(DATABASE_PATH) as connection:
         connection.execute(
             "INSERT INTO daily_request_count (day, count) VALUES (?, 1) "
             "ON CONFLICT(day) DO UPDATE SET count = count + 1",
             (today,),
         )
-        count = connection.execute(
-            "SELECT count FROM daily_request_count WHERE day = ?", (today,)
-        ).fetchone()[0]
+        count = fetchone(connection, "SELECT count FROM daily_request_count WHERE day = ?", (today,))[0]
     if count > DAILY_REQUEST_BUDGET:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -455,14 +461,13 @@ async def add_security_headers(request: Request, call_next):
 async def signup(data: SignupRequest, request: Request):
     await require_rate_limit(request)
     await require_login_rate_limit(request)
-    with sqlite3.connect(DATABASE_PATH) as connection:
-        try:
-            connection.execute(
-                "INSERT INTO user (id, password, nickname, majorId) VALUES (?, ?, ?, ?)",
-                (data.id, hash_password(data.password), data.nickname.strip(), data.major_id),
-            )
-        except sqlite3.IntegrityError:
-            raise HTTPException(status_code=409, detail="이미 가입된 학번입니다.") from None
+    with session(DATABASE_PATH) as connection:
+        if fetchone(connection, "SELECT 1 FROM user WHERE id = ?", (data.id,)) is not None:
+            raise HTTPException(status_code=409, detail="이미 가입된 학번입니다.")
+        connection.execute(
+            "INSERT INTO user (id, password, nickname, majorId) VALUES (?, ?, ?, ?)",
+            (data.id, hash_password(data.password), data.nickname.strip(), data.major_id),
+        )
     return {"success": True, "user": {"id": data.id, "nickname": data.nickname, "majorId": data.major_id or 1}}
 
 
@@ -470,11 +475,12 @@ async def signup(data: SignupRequest, request: Request):
 async def login(data: LoginRequest, request: Request):
     await require_rate_limit(request)
     await require_login_rate_limit(request)
-    with sqlite3.connect(DATABASE_PATH) as connection:
-        user = connection.execute(
+    with session(DATABASE_PATH) as connection:
+        user = fetchone(
+            connection,
             "SELECT id, password, nickname, majorId FROM user WHERE id = ?",
             (data.id.strip(),),
-        ).fetchone()
+        )
     if user is None or not verify_password(data.password, user[1]):
         raise HTTPException(status_code=401, detail="학번 또는 비밀번호가 일치하지 않습니다.")
     return {"success": True, "user": {"id": user[0], "nickname": user[2], "majorId": user[3] or 1}}
@@ -495,7 +501,7 @@ async def chat(data: ChatRequest, request: Request):
 
     message_id = str(uuid.uuid4())
     conversation_id = data.conversation_id or str(uuid.uuid4())
-    with sqlite3.connect(DATABASE_PATH) as connection:
+    with session(DATABASE_PATH) as connection:
         connection.execute(
             "INSERT INTO chat_audit (message_id, conversation_id, question, created_at) VALUES (?, ?, ?, ?)",
             (message_id, conversation_id, question, datetime.now(timezone.utc).isoformat()),
@@ -556,10 +562,8 @@ async def briefing(request: Request):
 @app.post("/api/feedback", status_code=status.HTTP_201_CREATED)
 async def save_feedback(data: FeedbackRequest, request: Request):
     await require_rate_limit(request)
-    with sqlite3.connect(DATABASE_PATH) as connection:
-        known_message = connection.execute(
-            "SELECT 1 FROM chat_audit WHERE message_id = ?", (data.message_id,)
-        ).fetchone()
+    with session(DATABASE_PATH) as connection:
+        known_message = fetchone(connection, "SELECT 1 FROM chat_audit WHERE message_id = ?", (data.message_id,))
         if known_message is None:
             raise HTTPException(status_code=404, detail="답변을 찾을 수 없습니다.")
         connection.execute(
@@ -581,7 +585,7 @@ async def health():
 
 @app.get("/api/filters")
 async def get_filters():
-    with sqlite3.connect(DATABASE_PATH) as connection:
-        departments = [row[0] for row in connection.execute("SELECT departmentName FROM department")]
-        tags = [row[0] for row in connection.execute("SELECT tagName FROM tag")]
+    with session(DATABASE_PATH) as connection:
+        departments = [row[0] for row in fetchall(connection, "SELECT departmentName FROM department")]
+        tags = [row[0] for row in fetchall(connection, "SELECT tagName FROM tag")]
     return {"departments": departments, "tags": tags}
