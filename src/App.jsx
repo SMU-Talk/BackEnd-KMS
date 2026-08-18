@@ -4,7 +4,7 @@ import Sidebar from "./components/Sidebar";
 import ChatPanel from "./components/ChatPanel";
 import GraduationChecklist from "./components/GraduationChecklist";
 import ThemeToggle from "./components/ThemeToggle";
-import { getCatalog, login, signup } from "./services/api";
+import { getCatalog, login, logout, signup } from "./services/api";
 
 const HISTORY_STORAGE_PREFIX = "smu-chatbot-conversations";
 
@@ -135,7 +135,10 @@ export default function App() {
           catalog={catalog}
           filters={filters}
           onFiltersChange={setFilters}
-          onLogout={() => setUser(null)}
+          onLogout={async () => {
+            await logout();
+            setUser(null);
+          }}
           onSearchResult={handleSearchResult}
           conversations={conversations}
           activeConversationId={conversationId}

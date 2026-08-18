@@ -1,18 +1,28 @@
 """University notice RAG API.
 
-This service intentionally answers only from the local, reviewed notice index.
-It has no connection to the university's private academic systems or SSO.
+The chat/notice RAG endpoints answer only from the local, reviewed notice index
+and never touch the university's SSO or academic systems directly.
+
+Grades reach this server three ways:
+
+- /api/grades/sync: the student submits their 통합정보시스템 credentials, this server
+  logs in on their behalf, reads the grade endpoints, and discards the password.
+  Nothing about that login is persisted -- see smul_client.py.
+- /api/integrations/grades: the optional browser extension talks to smul.smu.ac.kr
+  itself and forwards only parsed grade data, under an extension-scoped token.
+- /api/grades/import: manually pasted and reviewed by the student.
 """
 
 import asyncio
 import os
 import re
+import secrets
 import time
 import uuid
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from math import exp
 from pathlib import Path
 from typing import Literal, Optional
@@ -28,6 +38,8 @@ from pydantic import BaseModel, Field, field_validator
 
 from auth import hash_password, verify_password
 from db import fetchall, fetchone, session
+from grades_parser import parse_pasted_grades
+from smul_client import SmulFetchError, SmulLoginError, fetch_grades as fetch_smul_grades
 
 BASE_DIR = Path(__file__).resolve().parent
 DATABASE_PATH = BASE_DIR / "campus.db"
@@ -41,7 +53,16 @@ RECENCY_WEIGHT = 0.15
 KEYWORD_WEIGHT = 0.05
 RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "30"))
 LOGIN_RATE_LIMIT_PER_10MIN = int(os.getenv("LOGIN_RATE_LIMIT_PER_10MIN", "10"))
+# Every live sync is a real login attempt against the university SSO. Keep this
+# tight so a bug (or abuse) can't turn this server into a credential-stuffing relay.
+SMUL_SYNC_LIMIT_PER_10MIN = int(os.getenv("SMUL_SYNC_LIMIT_PER_10MIN", "5"))
 DAILY_REQUEST_BUDGET = int(os.getenv("DAILY_REQUEST_BUDGET", "0"))  # 0 = 무제한
+
+WEB_TOKEN_TTL_DAYS = 30
+EXTENSION_TOKEN_TTL_DAYS = 180
+LINK_CODE_TTL_SECONDS = 300
+LINK_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # 0/O/1/I/L 등 혼동 문자 제외
+LINK_CODE_LENGTH = 8
 
 STUDENT_ID_PATTERN = re.compile(r"^\d{8,10}$")
 PASSWORD_MIN_LENGTH = 8
@@ -120,6 +141,63 @@ class FeedbackRequest(BaseModel):
     message_id: str = Field(min_length=1, max_length=64)
     rating: Literal["up", "down"]
     comment: Optional[str] = Field(default=None, max_length=MAX_FEEDBACK_LENGTH)
+
+
+class LinkExchangeRequest(BaseModel):
+    code: str = Field(min_length=LINK_CODE_LENGTH, max_length=LINK_CODE_LENGTH)
+
+
+class GradesPasteRequest(BaseModel):
+    raw_text: str = Field(min_length=1, max_length=20_000, alias="rawText")
+
+
+class GradesLiveSyncRequest(BaseModel):
+    """통합정보시스템 자격증명. 이 요청을 처리하는 동안만 메모리에 존재하고 저장하지 않는다."""
+
+    student_id: str = Field(min_length=1, max_length=20, alias="studentId")
+    student_name: str = Field(min_length=1, max_length=40, alias="studentName")
+    password: str = Field(min_length=1, max_length=64)
+
+    @field_validator("student_id")
+    @classmethod
+    def validate_student_id(cls, value: str) -> str:
+        value = value.strip()
+        if not STUDENT_ID_PATTERN.match(value):
+            raise ValueError("학번 형식이 올바르지 않습니다.")
+        return value
+
+
+class GradeSummaryPayload(BaseModel):
+    total_applied_credit: Optional[str] = Field(default=None, max_length=20)
+    total_gpa: Optional[str] = Field(default=None, max_length=20)
+    major_gpa: Optional[str] = Field(default=None, max_length=20)
+    total_earned_credit: Optional[str] = Field(default=None, max_length=20)
+    total_grade_points: Optional[str] = Field(default=None, max_length=20)
+    total_registered_credit: Optional[str] = Field(default=None, max_length=20)
+
+
+class GradeSubjectPayload(BaseModel):
+    subject_no: str = Field(max_length=40)
+    subject_name: str = Field(max_length=200)
+    grade: Optional[str] = Field(default=None, max_length=20)
+    kind_code: Optional[str] = Field(default=None, max_length=20)
+    credit: Optional[str] = Field(default=None, max_length=10)
+    grade_points: Optional[str] = Field(default=None, max_length=10)
+
+
+class GradeSemesterPayload(BaseModel):
+    sch_year: str = Field(max_length=10)
+    semester_code: str = Field(max_length=20)
+    semester_name: Optional[str] = Field(default=None, max_length=40)
+    applied_credit: Optional[str] = Field(default=None, max_length=20)
+    earned_credit: Optional[str] = Field(default=None, max_length=20)
+    gpa: Optional[str] = Field(default=None, max_length=20)
+    subjects: list[GradeSubjectPayload] = Field(default_factory=list, max_length=60)
+
+
+class GradesSyncRequest(BaseModel):
+    summary: GradeSummaryPayload
+    semesters: list[GradeSemesterPayload] = Field(default_factory=list, max_length=40)
 
 
 class RateLimiterBackend(ABC):
@@ -250,6 +328,17 @@ class RAGService:
 rag = RAGService()
 limiter = build_limiter(RATE_LIMIT_PER_MINUTE, window_seconds=60)
 login_limiter = build_limiter(LOGIN_RATE_LIMIT_PER_10MIN, window_seconds=600)
+smul_sync_limiter = build_limiter(SMUL_SYNC_LIMIT_PER_10MIN, window_seconds=600)
+
+
+def issue_token(connection, user_id: str, scope: str, ttl_days: int) -> str:
+    token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    connection.execute(
+        "INSERT INTO session_token (token, user_id, scope, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+        (token, user_id, scope, now.isoformat(), (now + timedelta(days=ttl_days)).isoformat()),
+    )
+    return token
 
 
 def redact_pii(text: str) -> str:
@@ -374,6 +463,68 @@ TABLE_DEFINITIONS = (
         count INTEGER NOT NULL DEFAULT 0
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS session_token (
+        token TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES user(id),
+        scope TEXT NOT NULL DEFAULT 'web' CHECK (scope IN ('web', 'extension')),
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_session_token_user ON session_token(user_id)",
+    """
+    CREATE TABLE IF NOT EXISTS link_code (
+        code TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES user(id),
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        consumed_at TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS grade_summary (
+        user_id TEXT PRIMARY KEY REFERENCES user(id),
+        total_applied_credit TEXT,
+        total_gpa TEXT,
+        major_gpa TEXT,
+        total_earned_credit TEXT,
+        total_grade_points TEXT,
+        total_registered_credit TEXT,
+        synced_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS grade_semester (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL REFERENCES user(id),
+        sch_year TEXT NOT NULL,
+        semester_code TEXT NOT NULL,
+        semester_name TEXT,
+        applied_credit TEXT,
+        earned_credit TEXT,
+        gpa TEXT,
+        synced_at TEXT NOT NULL,
+        UNIQUE(user_id, sch_year, semester_code)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS grade_subject (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL REFERENCES user(id),
+        sch_year TEXT NOT NULL,
+        semester_code TEXT NOT NULL,
+        subject_no TEXT NOT NULL,
+        subject_name TEXT,
+        grade TEXT,
+        kind_code TEXT,
+        credit TEXT,
+        grade_points TEXT,
+        synced_at TEXT NOT NULL,
+        UNIQUE(user_id, sch_year, semester_code, subject_no)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_grade_subject_user ON grade_subject(user_id)",
 )
 
 
@@ -381,6 +532,16 @@ def initialize_storage() -> None:
     with session(DATABASE_PATH) as connection:
         for statement in TABLE_DEFINITIONS:
             connection.execute(statement)
+        # grade_subject predates the credit column; add it for databases created before this change.
+        columns = {row[1] for row in fetchall(connection, "PRAGMA table_info(grade_subject)")}
+        if "credit" not in columns:
+            connection.execute("ALTER TABLE grade_subject ADD COLUMN credit TEXT")
+        if "grade_points" not in columns:
+            connection.execute("ALTER TABLE grade_subject ADD COLUMN grade_points TEXT")
+        # grade_semester likewise predates earned_credit (졸업요건 계산의 기준).
+        columns = {row[1] for row in fetchall(connection, "PRAGMA table_info(grade_semester)")}
+        if "earned_credit" not in columns:
+            connection.execute("ALTER TABLE grade_semester ADD COLUMN earned_credit TEXT")
 
 
 async def require_rate_limit(request: Request) -> None:
@@ -399,6 +560,23 @@ async def require_login_rate_limit(request: Request) -> None:
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="로그인 시도가 너무 많습니다. 잠시 후 다시 시도해 주세요.",
         )
+
+
+async def require_auth(request: Request) -> tuple[str, str]:
+    """Validates the Authorization bearer token. Returns (user_id, scope)."""
+    header = request.headers.get("Authorization", "")
+    if not header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="인증이 필요합니다.")
+    token = header.removeprefix("Bearer ").strip()
+    with session(DATABASE_PATH) as connection:
+        row = fetchone(
+            connection,
+            "SELECT user_id, scope, expires_at FROM session_token WHERE token = ?",
+            (token,),
+        )
+    if row is None or datetime.fromisoformat(row[2]) < datetime.now(timezone.utc):
+        raise HTTPException(status_code=401, detail="세션이 만료되었거나 유효하지 않습니다.")
+    return row[0], row[1]
 
 
 def check_daily_request_budget() -> None:
@@ -439,7 +617,7 @@ app.add_middleware(
     allow_origins=allowed_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 
@@ -468,7 +646,12 @@ async def signup(data: SignupRequest, request: Request):
             "INSERT INTO user (id, password, nickname, majorId) VALUES (?, ?, ?, ?)",
             (data.id, hash_password(data.password), data.nickname.strip(), data.major_id),
         )
-    return {"success": True, "user": {"id": data.id, "nickname": data.nickname, "majorId": data.major_id or 1}}
+        token = issue_token(connection, data.id, "web", WEB_TOKEN_TTL_DAYS)
+    return {
+        "success": True,
+        "user": {"id": data.id, "nickname": data.nickname, "majorId": data.major_id or 1},
+        "token": token,
+    }
 
 
 @app.post("/api/login")
@@ -483,7 +666,319 @@ async def login(data: LoginRequest, request: Request):
         )
     if user is None or not verify_password(data.password, user[1]):
         raise HTTPException(status_code=401, detail="학번 또는 비밀번호가 일치하지 않습니다.")
-    return {"success": True, "user": {"id": user[0], "nickname": user[2], "majorId": user[3] or 1}}
+    with session(DATABASE_PATH) as connection:
+        token = issue_token(connection, user[0], "web", WEB_TOKEN_TTL_DAYS)
+    return {
+        "success": True,
+        "user": {"id": user[0], "nickname": user[2], "majorId": user[3] or 1},
+        "token": token,
+    }
+
+
+@app.post("/api/logout")
+async def logout(request: Request):
+    """Ends the session and clears the student's stored grades.
+
+    Grades are deliberately not kept across sessions: the panel must not show
+    graduation status to whoever logs in next without a fresh 통합정보시스템 sync.
+    """
+    await require_rate_limit(request)
+    user_id, _scope = await require_auth(request)
+    token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    with session(DATABASE_PATH) as connection:
+        connection.execute("DELETE FROM session_token WHERE token = ?", (token,))
+        connection.execute("DELETE FROM grade_subject WHERE user_id = ?", (user_id,))
+        connection.execute("DELETE FROM grade_semester WHERE user_id = ?", (user_id,))
+        connection.execute("DELETE FROM grade_summary WHERE user_id = ?", (user_id,))
+    return {"success": True}
+
+
+@app.post("/api/integrations/link-code")
+async def create_link_code(request: Request):
+    await require_rate_limit(request)
+    user_id, _scope = await require_auth(request)
+    code = "".join(secrets.choice(LINK_CODE_ALPHABET) for _ in range(LINK_CODE_LENGTH))
+    now = datetime.now(timezone.utc)
+    with session(DATABASE_PATH) as connection:
+        connection.execute(
+            "DELETE FROM link_code WHERE user_id = ? AND consumed_at IS NULL",
+            (user_id,),
+        )
+        connection.execute(
+            "INSERT INTO link_code (code, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+            (code, user_id, now.isoformat(), (now + timedelta(seconds=LINK_CODE_TTL_SECONDS)).isoformat()),
+        )
+    return {"code": code, "expiresInSeconds": LINK_CODE_TTL_SECONDS}
+
+
+@app.post("/api/integrations/link")
+async def exchange_link_code(data: LinkExchangeRequest, request: Request):
+    await require_rate_limit(request)
+    await require_login_rate_limit(request)
+    code = data.code.strip().upper()
+    with session(DATABASE_PATH) as connection:
+        row = fetchone(
+            connection,
+            "SELECT user_id, expires_at, consumed_at FROM link_code WHERE code = ?",
+            (code,),
+        )
+        if row is None or row[2] is not None or datetime.fromisoformat(row[1]) < datetime.now(timezone.utc):
+            raise HTTPException(status_code=400, detail="코드가 유효하지 않거나 만료되었습니다.")
+        user_id = row[0]
+        connection.execute(
+            "UPDATE link_code SET consumed_at = ? WHERE code = ?",
+            (datetime.now(timezone.utc).isoformat(), code),
+        )
+        user = fetchone(connection, "SELECT id, nickname FROM user WHERE id = ?", (user_id,))
+        token = issue_token(connection, user_id, "extension", EXTENSION_TOKEN_TTL_DAYS)
+    return {"token": token, "user": {"id": user[0], "nickname": user[1]}}
+
+
+def persist_grades(
+    connection, user_id: str, data: GradesSyncRequest, now: str, replace: bool = False
+) -> int:
+    """Upserts summary/semester/subject rows for one user. Returns subjects written.
+
+    `replace` clears the user's existing semester/subject rows first, for callers
+    that supply a complete snapshot. Without it a row whose key changes (a corrected
+    semester code, a dropped course) would linger forever and be double-counted.
+    Pasted imports are partial, so they must not use it.
+    """
+    if replace:
+        connection.execute("DELETE FROM grade_subject WHERE user_id = ?", (user_id,))
+        connection.execute("DELETE FROM grade_semester WHERE user_id = ?", (user_id,))
+
+    summary = data.summary
+    connection.execute(
+        """
+        INSERT INTO grade_summary
+            (user_id, total_applied_credit, total_gpa, major_gpa,
+             total_earned_credit, total_grade_points, total_registered_credit, synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            total_applied_credit = excluded.total_applied_credit,
+            total_gpa = excluded.total_gpa,
+            major_gpa = excluded.major_gpa,
+            total_earned_credit = excluded.total_earned_credit,
+            total_grade_points = excluded.total_grade_points,
+            total_registered_credit = excluded.total_registered_credit,
+            synced_at = excluded.synced_at
+        """,
+        (
+            user_id,
+            summary.total_applied_credit,
+            summary.total_gpa,
+            summary.major_gpa,
+            summary.total_earned_credit,
+            summary.total_grade_points,
+            summary.total_registered_credit,
+            now,
+        ),
+    )
+    subject_count = 0
+    for semester in data.semesters:
+        connection.execute(
+            """
+            INSERT INTO grade_semester
+                (user_id, sch_year, semester_code, semester_name, applied_credit, earned_credit, gpa, synced_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, sch_year, semester_code) DO UPDATE SET
+                semester_name = excluded.semester_name,
+                applied_credit = excluded.applied_credit,
+                earned_credit = excluded.earned_credit,
+                gpa = excluded.gpa,
+                synced_at = excluded.synced_at
+            """,
+            (
+                user_id,
+                semester.sch_year,
+                semester.semester_code,
+                semester.semester_name,
+                semester.applied_credit,
+                semester.earned_credit,
+                semester.gpa,
+                now,
+            ),
+        )
+        for subject in semester.subjects:
+            connection.execute(
+                """
+                INSERT INTO grade_subject
+                    (user_id, sch_year, semester_code, subject_no, subject_name, grade, kind_code,
+                     credit, grade_points, synced_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, sch_year, semester_code, subject_no) DO UPDATE SET
+                    subject_name = excluded.subject_name,
+                    grade = excluded.grade,
+                    kind_code = excluded.kind_code,
+                    credit = excluded.credit,
+                    grade_points = excluded.grade_points,
+                    synced_at = excluded.synced_at
+                """,
+                (
+                    user_id,
+                    semester.sch_year,
+                    semester.semester_code,
+                    subject.subject_no,
+                    subject.subject_name,
+                    subject.grade,
+                    subject.kind_code,
+                    subject.credit,
+                    subject.grade_points,
+                    now,
+                ),
+            )
+            subject_count += 1
+    return subject_count
+
+
+@app.post("/api/integrations/grades", status_code=status.HTTP_201_CREATED)
+async def sync_grades(data: GradesSyncRequest, request: Request):
+    await require_rate_limit(request)
+    user_id, scope = await require_auth(request)
+    if scope != "extension":
+        raise HTTPException(status_code=403, detail="확장 프로그램 전용 엔드포인트입니다.")
+    now = datetime.now(timezone.utc).isoformat()
+    with session(DATABASE_PATH) as connection:
+        # The extension also sends every semester it can see, so it is a full snapshot.
+        subject_count = persist_grades(connection, user_id, data, now, replace=True)
+    return {"success": True, "semestersSynced": len(data.semesters), "subjectsSynced": subject_count}
+
+
+@app.post("/api/grades/sync", status_code=status.HTTP_201_CREATED)
+async def sync_grades_from_portal(data: GradesLiveSyncRequest, request: Request):
+    """Logs into 통합정보시스템 with the student's credentials and stores the result.
+
+    The password lives only in this coroutine's arguments; it is never written to
+    the database, the response, or a log line.
+    """
+    await require_rate_limit(request)
+    user_id, _scope = await require_auth(request)
+    if not await smul_sync_limiter.allow(user_id):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="동기화 시도가 너무 많습니다. 잠시 후 다시 시도해 주세요.",
+        )
+
+    try:
+        result = await fetch_smul_grades(data.student_id, data.student_name, data.password)
+    except SmulLoginError as error:
+        raise HTTPException(status_code=401, detail=str(error)) from None
+    except SmulFetchError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from None
+    except Exception:
+        raise HTTPException(status_code=502, detail="통합정보시스템에 연결하지 못했습니다.") from None
+
+    payload = GradesSyncRequest.model_validate(result)
+    now = datetime.now(timezone.utc).isoformat()
+    with session(DATABASE_PATH) as connection:
+        subject_count = persist_grades(connection, user_id, payload, now, replace=True)
+    return {
+        "success": True,
+        "semestersSynced": len(payload.semesters),
+        "subjectsSynced": subject_count,
+    }
+
+
+@app.post("/api/grades/parse-preview")
+async def parse_grades_preview(data: GradesPasteRequest, request: Request):
+    await require_rate_limit(request)
+    await require_auth(request)
+    return parse_pasted_grades(data.raw_text)
+
+
+@app.post("/api/grades/import", status_code=status.HTTP_201_CREATED)
+async def import_grades(data: GradesSyncRequest, request: Request):
+    """Saves grades a student pasted from the 전체성적조회 page and reviewed/edited client-side."""
+    await require_rate_limit(request)
+    user_id, _scope = await require_auth(request)
+    now = datetime.now(timezone.utc).isoformat()
+    with session(DATABASE_PATH) as connection:
+        subject_count = persist_grades(connection, user_id, data, now)
+    return {"success": True, "semestersSynced": len(data.semesters), "subjectsSynced": subject_count}
+
+
+@app.get("/api/grades")
+async def get_grades(request: Request):
+    await require_rate_limit(request)
+    user_id, _scope = await require_auth(request)
+    with session(DATABASE_PATH) as connection:
+        summary_row = fetchone(
+            connection,
+            """
+            SELECT total_applied_credit, total_gpa, major_gpa,
+                   total_earned_credit, total_grade_points, total_registered_credit, synced_at
+            FROM grade_summary WHERE user_id = ?
+            """,
+            (user_id,),
+        )
+        semester_rows = fetchall(
+            connection,
+            """
+            SELECT sch_year, semester_code, semester_name, applied_credit, earned_credit, gpa
+            FROM grade_semester WHERE user_id = ? ORDER BY sch_year, semester_code
+            """,
+            (user_id,),
+        )
+        subject_rows = fetchall(
+            connection,
+            """
+            SELECT sch_year, semester_code, subject_no, subject_name, grade, kind_code, credit, grade_points
+            FROM grade_subject WHERE user_id = ? ORDER BY sch_year, semester_code
+            """,
+            (user_id,),
+        )
+
+    if summary_row is None:
+        return {"summary": None, "semesters": [], "syncedAt": None}
+
+    subjects_by_semester: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for (
+        sch_year,
+        semester_code,
+        subject_no,
+        subject_name,
+        grade,
+        kind_code,
+        credit,
+        grade_points,
+    ) in subject_rows:
+        subjects_by_semester[(sch_year, semester_code)].append(
+            {
+                "subjectNo": subject_no,
+                "subjectName": subject_name,
+                "grade": grade,
+                "kindCode": kind_code,
+                "credit": credit,
+                "gradePoints": grade_points,
+            }
+        )
+
+    semesters = [
+        {
+            "schYear": sch_year,
+            "semesterCode": semester_code,
+            "semesterName": semester_name,
+            "appliedCredit": applied_credit,
+            "earnedCredit": earned_credit,
+            "gpa": gpa,
+            "subjects": subjects_by_semester.get((sch_year, semester_code), []),
+        }
+        for sch_year, semester_code, semester_name, applied_credit, earned_credit, gpa in semester_rows
+    ]
+
+    return {
+        "summary": {
+            "totalAppliedCredit": summary_row[0],
+            "totalGpa": summary_row[1],
+            "majorGpa": summary_row[2],
+            "totalEarnedCredit": summary_row[3],
+            "totalGradePoints": summary_row[4],
+            "totalRegisteredCredit": summary_row[5],
+        },
+        "semesters": semesters,
+        "syncedAt": summary_row[6],
+    }
 
 
 @app.post("/api/chat")

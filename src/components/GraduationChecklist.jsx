@@ -1,13 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import {
-  CREDIT_REQUIREMENTS,
-  LIBERAL_ARTS_BY_YEAR,
-  LIBERAL_ARTS_EXCEPTIONS,
-  GRADUATION_RULE_ARTICLES,
-  PRE_2013_TOTAL_CREDIT,
-} from "../data/graduationRequirements";
+import { TRACK_RULES, MANUAL_REQUIREMENTS, GRAD_STATE_STORAGE_KEY } from "../data/graduationRules";
+import { getGrades, syncGradesFromPortal } from "../services/api";
+import { auditGraduation, isSeasonal } from "../utils/graduationAudit";
 
-const STORAGE_KEY = "gradChecklistState";
+const STORAGE_KEY = GRAD_STATE_STORAGE_KEY;
 
 const TRACKS = [
   { id: "single", label: "단일전공" },
@@ -15,130 +11,104 @@ const TRACKS = [
   { id: "minor", label: "부전공" },
 ];
 
+// 학번/이름만 이 브라우저에 기억합니다. 비밀번호는 저장하지 않습니다.
 const defaultState = {
   collapsed: false,
-  majorKey: "",
-  yearId: LIBERAL_ARTS_BY_YEAR[0].id,
-  isPre2013: false,
   track: "single",
-  credits: { liberalArts: "", majorA: "", majorB: "", elective: "" },
-  basicsChecked: {},
-  backboneChecked: false,
-  balanceChecked: false,
-  articlesChecked: {},
-  gpa: "",
+  smulStudentId: "",
+  smulStudentName: "",
 };
 
 function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return defaultState;
-    const saved = JSON.parse(raw);
-    return { ...defaultState, ...saved, credits: { ...defaultState.credits, ...saved.credits } };
+    return raw ? { ...defaultState, ...JSON.parse(raw) } : defaultState;
   } catch {
     return defaultState;
   }
 }
 
-const majorKeyOf = (item) => `${item.department}__${item.major}`;
-const toNumber = (value) => Number(value) || 0;
+// 2013학번 이전 입학자는 졸업이수학점이 140학점입니다.
+function isPre2013(studentId) {
+  const year = Number(String(studentId).slice(0, 4));
+  return Number.isFinite(year) && year > 1900 && year < 2013;
+}
 
-function CreditInput({ label, value, onChange, required, done }) {
-  const ok = required === 0 || done >= required;
+function CreditRow({ label, done, required, short, met, indent }) {
   return (
-    <label className="grad-credit-input">
-      <span>{label}</span>
-      <input type="number" min="0" value={value} onChange={(event) => onChange(event.target.value)} placeholder="0" />
-      <em className={ok ? "ok" : "pending"}>{ok ? "충족" : `${required - done}학점 부족`}</em>
-    </label>
+    <div className={`grad-req-row${indent ? " indent" : ""}`}>
+      <span className="grad-req-label">{label}</span>
+      <span className="grad-req-value">
+        <b>{done}</b> / {required}학점
+      </span>
+      <em className={met ? "ok" : "pending"}>{met ? "충족" : `${short}학점 부족`}</em>
+    </div>
   );
 }
 
 export default function GraduationChecklist() {
   const [state, setState] = useState(loadState);
+  const [grades, setGrades] = useState({ summary: null, semesters: [], syncedAt: null });
+  const [smulPassword, setSmulPassword] = useState("");
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [syncError, setSyncError] = useState("");
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   }, [state]);
 
+  const reloadGrades = () => {
+    getGrades()
+      .then((data) =>
+        setGrades({ summary: data.summary, semesters: data.semesters || [], syncedAt: data.syncedAt })
+      )
+      .catch(() => {});
+  };
+
+  useEffect(reloadGrades, []);
+
   const update = (patch) => setState((current) => ({ ...current, ...patch }));
-  const updateCredit = (key, value) => update({ credits: { ...state.credits, [key]: value } });
 
-  const groupedMajors = useMemo(() => {
-    const map = new Map();
-    for (const item of CREDIT_REQUIREMENTS) {
-      if (!map.has(item.department)) map.set(item.department, []);
-      map.get(item.department).push(item);
+  const handlePortalSync = async () => {
+    setSyncLoading(true);
+    setSyncError("");
+    try {
+      await syncGradesFromPortal({
+        studentId: state.smulStudentId.trim(),
+        studentName: state.smulStudentName.trim(),
+        password: smulPassword,
+      });
+      setSmulPassword("");
+      reloadGrades();
+    } catch (error) {
+      setSyncError(error.message || "동기화하지 못했습니다.");
+    } finally {
+      setSyncLoading(false);
     }
-    return map;
-  }, []);
+  };
 
-  const selectedMajor = useMemo(
-    () => CREDIT_REQUIREMENTS.find((item) => majorKeyOf(item) === state.majorKey) || null,
-    [state.majorKey]
+  const hasGrades = grades.semesters.length > 0;
+
+  const audit = useMemo(
+    () =>
+      hasGrades
+        ? auditGraduation(grades, { track: state.track, isPre2013: isPre2013(state.smulStudentId) })
+        : null,
+    [hasGrades, grades, state.track, state.smulStudentId]
   );
 
-  const selectedYear = LIBERAL_ARTS_BY_YEAR.find((year) => year.id === state.yearId) || LIBERAL_ARTS_BY_YEAR[0];
-
-  const trackRequirement = useMemo(() => {
-    if (!selectedMajor) return null;
-    if (state.track === "single") {
-      if (selectedMajor.singleMerged) {
-        return { aLabel: null, aRequired: 0, bLabel: "전공", bRequired: selectedMajor.singleElective };
-      }
-      return { aLabel: "전공심화", aRequired: selectedMajor.singleAdvanced, bLabel: "전공선택", bRequired: selectedMajor.singleElective };
-    }
-    if (state.track === "multi") {
-      return {
-        aLabel: "1전공",
-        aRequired: selectedMajor.multiPrimary,
-        bLabel: "다전공",
-        bRequired: selectedMajor.multiSecondary,
-        note: selectedMajor.multiNote,
-      };
-    }
-    return { aLabel: "1전공", aRequired: selectedMajor.minorPrimary, bLabel: "부전공", bRequired: selectedMajor.minorSecondary };
-  }, [selectedMajor, state.track]);
-
-  const totalRequired = state.isPre2013 ? PRE_2013_TOTAL_CREDIT : selectedMajor?.total || 0;
-  const liberalArtsRequired = selectedYear.total;
-  const majorRequired = trackRequirement ? trackRequirement.aRequired + trackRequirement.bRequired : 0;
-  const electiveRequired = Math.max(totalRequired - liberalArtsRequired - majorRequired, 0);
-
-  const liberalArtsDone = toNumber(state.credits.liberalArts);
-  const majorADone = toNumber(state.credits.majorA);
-  const majorBDone = toNumber(state.credits.majorB);
-  const electiveDone = toNumber(state.credits.elective);
-  const totalDone = liberalArtsDone + majorADone + majorBDone + electiveDone;
-
-  const unmetItems = [];
-  if (selectedMajor && trackRequirement) {
-    if (liberalArtsDone < liberalArtsRequired) unmetItems.push(`교양 ${liberalArtsRequired - liberalArtsDone}학점 부족`);
-    if (trackRequirement.aLabel && majorADone < trackRequirement.aRequired) {
-      unmetItems.push(`${trackRequirement.aLabel} ${trackRequirement.aRequired - majorADone}학점 부족`);
-    }
-    if (majorBDone < trackRequirement.bRequired) {
-      unmetItems.push(`${trackRequirement.bLabel} ${trackRequirement.bRequired - majorBDone}학점 부족`);
-    }
-    if (totalDone < totalRequired) unmetItems.push(`총 이수학점 ${totalRequired - totalDone}학점 부족`);
-    selectedYear.basics.forEach((item) => {
-      if (item.requirement !== "해당 없음" && !state.basicsChecked[item.name]) unmetItems.push(`${item.name} 미이수`);
-    });
-    if (!state.backboneChecked) unmetItems.push("상명핵심역량교양 미충족");
-    if (!state.balanceChecked) unmetItems.push("균형교양 미충족");
-    GRADUATION_RULE_ARTICLES.forEach((article) => {
-      if (article.id === "gpa") {
-        if (!(Number(state.gpa) >= article.minGpa)) unmetItems.push("평점평균 요건 미충족");
-      } else if (!state.articlesChecked[article.id]) {
-        unmetItems.push(`${article.label} 미충족`);
-      }
-    });
-  }
+  // 연계·부전공 학점이 잡히는데 단일전공으로 보고 있으면 전공 유형을 잘못 고른 것입니다.
+  const trackHint =
+    audit && state.track === "single" && audit.totals.secondaryMajor > 0
+      ? `연계/부전공 이수구분 학점이 ${audit.totals.secondaryMajor}학점 있습니다. 다전공 또는 부전공을 선택하세요.`
+      : "";
 
   if (state.collapsed) {
     return (
       <aside className="grad-panel collapsed">
-        <button className="grad-panel-toggle" onClick={() => update({ collapsed: false })}>🎓 졸업요건</button>
+        <button className="grad-panel-toggle" onClick={() => update({ collapsed: false })}>
+          🎓 졸업요건
+        </button>
       </aside>
     );
   }
@@ -147,44 +117,66 @@ export default function GraduationChecklist() {
     <aside className="grad-panel">
       <header className="grad-panel-header">
         <b>🎓 졸업요건 체크리스트</b>
-        <button onClick={() => update({ collapsed: true })} aria-label="패널 접기">✕</button>
+        <button onClick={() => update({ collapsed: true })} aria-label="패널 접기">
+          ✕
+        </button>
       </header>
+
       <div className="grad-panel-body">
-        <section>
-          <h2>1. 학과 / 전공 선택</h2>
-          <select value={state.majorKey} onChange={(event) => update({ majorKey: event.target.value })}>
-            <option value="">학과/전공을 선택하세요</option>
-            {[...groupedMajors.entries()].map(([department, items]) => (
-              <optgroup label={department} key={department}>
-                {items.map((item) => (
-                  <option value={majorKeyOf(item)} key={majorKeyOf(item)}>
-                    {item.group ? `${item.group} · ${item.major}` : item.major}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
+        <section className="grad-sync">
+          <h2>{hasGrades ? "성적 다시 가져오기" : "통합정보시스템 로그인"}</h2>
+          <p className="grad-note">
+            통합정보시스템(smul.smu.ac.kr) 계정으로 로그인하면 전체성적조회 내용을 그대로 가져와
+            졸업요건을 계산합니다.
+          </p>
+          <input
+            type="text"
+            placeholder="학번"
+            autoComplete="username"
+            value={state.smulStudentId}
+            onChange={(event) => update({ smulStudentId: event.target.value })}
+          />
+          <input
+            type="text"
+            placeholder="이름"
+            value={state.smulStudentName}
+            onChange={(event) => update({ smulStudentName: event.target.value })}
+          />
+          <input
+            type="password"
+            placeholder="통합정보시스템 비밀번호"
+            autoComplete="current-password"
+            value={smulPassword}
+            onChange={(event) => setSmulPassword(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !syncLoading) handlePortalSync();
+            }}
+          />
+          <button
+            onClick={handlePortalSync}
+            disabled={
+              syncLoading || !state.smulStudentId.trim() || !state.smulStudentName.trim() || !smulPassword
+            }
+          >
+            {syncLoading ? "가져오는 중..." : "학점 가져오기"}
+          </button>
+          {syncError && <p className="grad-sync-error">{syncError}</p>}
+          <p className="grad-note">
+            비밀번호는 이 요청을 처리하는 동안에만 쓰고 저장하지 않습니다. 가져올 때마다 다시 입력해야
+            합니다. 학번과 이름만 이 브라우저에 기억됩니다.
+          </p>
         </section>
 
-        {selectedMajor && trackRequirement && (
+        {audit && (
           <>
-            <div className={`grad-summary ${unmetItems.length === 0 ? "ok" : "pending"}`}>
-              {unmetItems.length === 0 ? "🎉 입력한 기준으로는 졸업요건을 모두 충족했어요" : `아직 ${unmetItems.length}개 항목이 남았어요`}
+            <div className={`grad-summary ${audit.allMet ? "ok" : "pending"}`}>
+              {audit.allMet
+                ? "🎉 학점 요건은 모두 충족했어요"
+                : `졸업까지 ${audit.remainingCredits}학점 남았어요`}
             </div>
 
             <section>
-              <h2>2. 입학년도 / 전공 유형</h2>
-              <label className="grad-checkbox">
-                <input type="checkbox" checked={state.isPre2013} onChange={(event) => update({ isPre2013: event.target.checked })} />
-                2013학번 이전 입학 (졸업이수학점 {PRE_2013_TOTAL_CREDIT}학점 적용)
-              </label>
-              {!state.isPre2013 && (
-                <select value={state.yearId} onChange={(event) => update({ yearId: event.target.value })}>
-                  {LIBERAL_ARTS_BY_YEAR.map((year) => (
-                    <option value={year.id} key={year.id}>{year.label}</option>
-                  ))}
-                </select>
-              )}
+              <h2>전공 유형</h2>
               <div className="grad-track-buttons">
                 {TRACKS.map((track) => (
                   <button
@@ -196,114 +188,94 @@ export default function GraduationChecklist() {
                   </button>
                 ))}
               </div>
+              <p className="grad-note">{TRACK_RULES[state.track].description}</p>
+              {trackHint && <p className="grad-sync-error">{trackHint}</p>}
             </section>
 
             <section>
-              <h2>3. 이수 학점 입력</h2>
-              <CreditInput
-                label={`교양 (${liberalArtsRequired}학점)`}
-                value={state.credits.liberalArts}
-                onChange={(value) => updateCredit("liberalArts", value)}
-                required={liberalArtsRequired}
-                done={liberalArtsDone}
-              />
-              {trackRequirement.aLabel && (
-                <CreditInput
-                  label={`${trackRequirement.aLabel} (${trackRequirement.aRequired}학점)`}
-                  value={state.credits.majorA}
-                  onChange={(value) => updateCredit("majorA", value)}
-                  required={trackRequirement.aRequired}
-                  done={majorADone}
-                />
-              )}
-              <CreditInput
-                label={`${trackRequirement.bLabel} (${trackRequirement.bRequired}학점)`}
-                value={state.credits.majorB}
-                onChange={(value) => updateCredit("majorB", value)}
-                required={trackRequirement.bRequired}
-                done={majorBDone}
-              />
-              {trackRequirement.note && <p className="grad-note">참고: {trackRequirement.note}</p>}
-              <CreditInput
-                label={`자유선택 등 기타 (${electiveRequired}학점 권장)`}
-                value={state.credits.elective}
-                onChange={(value) => updateCredit("elective", value)}
-                required={electiveRequired}
-                done={electiveDone}
-              />
-              <div className="grad-total">
-                총 이수학점 <b>{totalDone}</b> / {totalRequired}
-                {totalDone >= totalRequired ? <span className="ok"> 충족</span> : <span className="pending"> {totalRequired - totalDone}학점 부족</span>}
-              </div>
-            </section>
-
-            <section>
-              <h2>4. 교양 세부 이수기준 ({selectedYear.label})</h2>
-              {selectedYear.basics.map((item) => (
-                <label className="grad-checkbox" key={item.name}>
-                  <input
-                    type="checkbox"
-                    checked={!!state.basicsChecked[item.name]}
-                    onChange={(event) => update({ basicsChecked: { ...state.basicsChecked, [item.name]: event.target.checked } })}
-                  />
-                  {item.name} <small>({item.requirement})</small>
-                </label>
-              ))}
-              <label className="grad-checkbox">
-                <input type="checkbox" checked={state.backboneChecked} onChange={(event) => update({ backboneChecked: event.target.checked })} />
-                {selectedYear.backbone}
-              </label>
-              <label className="grad-checkbox">
-                <input type="checkbox" checked={state.balanceChecked} onChange={(event) => update({ balanceChecked: event.target.checked })} />
-                {selectedYear.balance}
-              </label>
-              <p className="grad-note">{selectedYear.breadth}</p>
-              <details className="grad-exceptions">
-                <summary>이수기준 예외자 보기</summary>
-                <ul>{LIBERAL_ARTS_EXCEPTIONS.map((line) => <li key={line}>{line}</li>)}</ul>
-              </details>
-            </section>
-
-            <section>
-              <h2>5. 졸업요건 (학칙 제79조)</h2>
-              {GRADUATION_RULE_ARTICLES.map((article) => (
-                <div className="grad-article" key={article.id}>
-                  {article.id === "gpa" ? (
-                    <label className="grad-checkbox">
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        max="4.5"
-                        placeholder="평점평균"
-                        value={state.gpa}
-                        onChange={(event) => update({ gpa: event.target.value })}
-                      />
-                      {article.label}
-                      {state.gpa !== "" && (
-                        Number(state.gpa) >= article.minGpa
-                          ? <span className="ok"> 충족</span>
-                          : <span className="pending"> 미충족</span>
-                      )}
-                    </label>
-                  ) : (
-                    <label className="grad-checkbox">
-                      <input
-                        type="checkbox"
-                        checked={!!state.articlesChecked[article.id]}
-                        onChange={(event) => update({ articlesChecked: { ...state.articlesChecked, [article.id]: event.target.checked } })}
-                      />
-                      {article.label}
-                    </label>
-                  )}
-                  <small>{article.detail}</small>
+              <h2>이수학점 (취득학점 기준)</h2>
+              {audit.requirements.map((item) => (
+                <div key={item.id}>
+                  <CreditRow {...item} />
+                  {item.sub && <CreditRow {...item.sub} indent />}
                 </div>
               ))}
+              {audit.totals.freeElective > 0 && (
+                <p className="grad-note">
+                  자유선택 등 기타 {audit.totals.freeElective}학점은 총 이수학점에만 반영됩니다.
+                </p>
+              )}
+              {audit.unlistedCredits !== 0 && (
+                <p className="grad-note">
+                  총 이수학점은 시스템의 취득학점({audit.totalDone}학점)을 그대로 썼습니다. 과목별
+                  합계({audit.subjectTotal}학점)와 {Math.abs(audit.unlistedCredits)}학점 차이가 나는데,
+                  편입·교환 인정학점처럼 과목 목록에 안 나오는 학점일 수 있습니다.
+                </p>
+              )}
+              <p className="grad-note">
+                재수강 과목은 한 번만 셌고, 학점을 받지 못한 과목(F·NP 등)은 제외했습니다.
+              </p>
+            </section>
+
+            <section>
+              <h2>그 밖의 요건</h2>
+              <div className="grad-req-row">
+                <span className="grad-req-label">{audit.gpaCheck.label}</span>
+                <span className="grad-req-value">
+                  <b>{audit.gpaCheck.value ?? "-"}</b>
+                </span>
+                <em className={audit.gpaCheck.met ? "ok" : "pending"}>
+                  {audit.gpaCheck.met ? "충족" : "미충족"}
+                </em>
+              </div>
+              <div className="grad-req-row">
+                <span className="grad-req-label">{audit.semesterCheck.label}</span>
+                <span className="grad-req-value">
+                  <b>{audit.semesterCheck.value}</b> / {audit.semesterCheck.required}학기
+                </span>
+                <em className={audit.semesterCheck.met ? "ok" : "pending"}>
+                  {audit.semesterCheck.met ? "충족" : `${audit.semesterCheck.required - audit.semesterCheck.value}학기 부족`}
+                </em>
+              </div>
+              <p className="grad-note">계절수업은 등록학기에 포함하지 않았습니다.</p>
+            </section>
+
+            <section>
+              <h2>직접 확인해야 하는 항목</h2>
+              <p className="grad-note">
+                성적 데이터만으로는 판정할 수 없어 학과 사무실이나 통합정보시스템에서 확인해야 합니다.
+              </p>
+              <ul className="grad-manual-list">
+                {MANUAL_REQUIREMENTS.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+                <li>조기졸업·학석사연계과정 해당자는 기준이 다릅니다 (6학기, 평점 4.0)</li>
+              </ul>
+            </section>
+
+            <section>
+              <h2>학기별 취득학점</h2>
+              <ul className="grad-semester-list">
+                {grades.semesters.map((semester) => (
+                  <li key={`${semester.schYear}-${semester.semesterCode}`}>
+                    <span>
+                      {semester.schYear} {semester.semesterName}
+                      {isSeasonal(semester) && <small className="grad-auto-tag"> 계절</small>}
+                    </span>
+                    <span>
+                      취득 {semester.earnedCredit ?? "-"}학점 · 평점 {semester.gpa ?? "-"}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              {grades.syncedAt && (
+                <p className="grad-note">{new Date(grades.syncedAt).toLocaleString("ko-KR")} 기준</p>
+              )}
             </section>
 
             <p className="grad-disclaimer">
-              학교 성적·수강내역 API가 아직 없어 입력값은 이 브라우저에만 저장되고 서버로 전송되지 않습니다.
-              참고용 계산이니 정확한 판정은 반드시 학과 사무실·학사종합정보시스템으로 확인하세요.
+              참고용 계산입니다. 정확한 졸업 판정은 반드시 학과 사무실과 통합정보시스템
+              [학생기본]-[졸업]-[졸업기준학점조회]로 확인하세요.
             </p>
           </>
         )}

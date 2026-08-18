@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <title>SMU-Talk 학점 동기화</title>
+    <style>
+      body {
+        font-family: system-ui, "Malgun Gothic", sans-serif;
+        width: 260px;
+        padding: 12px;
+        margin: 0;
+      }
+      h1 {
+        font-size: 14px;
+        margin: 0 0 8px;
+      }
+      p {
+        font-size: 12px;
+        color: #444;
+      }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 6px;
+        margin-bottom: 8px;
+        font-size: 13px;
+      }
+      #codeInput {
+        text-transform: uppercase;
+      }
+      details {
+        margin-top: 10px;
+        border-top: 1px solid #eee;
+        padding-top: 8px;
+      }
+      summary {
+        font-size: 12px;
+        color: #444;
+        cursor: pointer;
+        margin-bottom: 8px;
+      }
+      button {
+        width: 100%;
+        padding: 8px;
+        cursor: pointer;
+        font-size: 13px;
+        margin-bottom: 6px;
+      }
+      #unlinkButton {
+        background: none;
+        border: 1px solid #ccc;
+      }
+      #status {
+        font-size: 12px;
+        margin-top: 8px;
+        white-space: pre-wrap;
+      }
+      .error {
+        color: #c0392b;
+      }
+      .ok {
+        color: #1e7e34;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>SMU-Talk 학점 동기화</h1>
+
+    <div id="linkView">
+      <p>SMU-Talk 웹사이트(졸업요건 패널)에서 발급받은 연동 코드를 입력하세요.</p>
+      <input id="codeInput" maxlength="8" placeholder="예: AB12CD34" />
+      <button id="linkButton">연동하기</button>
+    </div>
+
+    <div id="syncView" style="display: none">
+      <p id="userLabel"></p>
+      <button id="syncButton">지금 동기화</button>
+      <p id="lastSynced"></p>
+      <p><small>smul.smu.ac.kr에 로그인한 탭이 열려 있어야 동기화됩니다.</small></p>
+      <button id="unlinkButton">연동 해제</button>
+    </div>
+
+    <p id="status"></p>
+
+    <details id="identityDetails">
+      <summary>학번/이름 자동 인식이 안 될 때</summary>
+      <p><small>smul.smu.ac.kr 페이지에서 학번/이름을 자동으로 찾지 못하면 한 번만 입력해두세요. 이후 자동으로 사용됩니다.</small></p>
+      <input id="studentNoInput" placeholder="학번 (예: 202012345)" />
+      <input id="studentNameInput" placeholder="이름 (예: 홍길동)" />
+      <button id="saveIdentityButton">저장</button>
+      <p id="identityStatus"></p>
+    </details>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

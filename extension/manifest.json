@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "SMU-Talk 학점 동기화",
+  "version": "0.1.0",
+  "description": "smul.smu.ac.kr에서 본인 학점을 확인해 SMU-Talk에 안전하게 동기화합니다. 세션 쿠키는 이 확장 밖으로 나가지 않습니다.",
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://smul.smu.ac.kr/*"],
+      "js": ["config.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": [
+    "https://smul.smu.ac.kr/*",
+    "http://localhost:8000/*"
+  ],
+  "permissions": ["storage", "tabs"]
+}

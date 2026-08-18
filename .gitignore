@@ -44,3 +44,6 @@ backend/campus.db
 
 .vercel
 .env*
+
+# 원격 저장소 최신화 전에 만든 로컬 백업 (2026-08-15). 공유 대상이 아님.
+_local_backup_*/
