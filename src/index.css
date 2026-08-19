@@ -162,7 +162,7 @@ button { cursor: pointer; }
 .grad-panel-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--border); }
 .grad-panel-header b { font-size: 13px; color: var(--text); }
 .grad-panel-header button { border: 0; background: transparent; color: var(--text-muted); font-size: 15px; }
-.grad-panel-body { flex: 1; overflow-y: auto; padding: 16px; display: grid; gap: 18px; }
+.grad-panel-body { flex: 1; overflow-y: auto; padding: 16px; display: grid; gap: 18px; align-content: start; }
 .grad-panel-body section { display: grid; gap: 8px; }
 .grad-panel-body h2 { margin: 0 0 2px; color: var(--text-dimmer); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; }
 .grad-panel-body select { width: 100%; padding: 9px 10px; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--surface-2); color: var(--text); }

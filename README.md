@@ -103,13 +103,55 @@ npm.cmd run dev
 
 ## RAG 품질 기준
 
-검색 후보 12개를 가져온 뒤 아래 가중치로 4개를 선택합니다.
+검색 로직은 `backend/retrieval.py` 한 곳에 있습니다. API와 평가 스크립트가 **같은 코드**를
+쓰기 때문에, 평가에서 잰 숫자가 실제 서비스 동작과 어긋나지 않습니다.
 
-- 의미 유사도: 80%
-- 공지 최신성: 15%
-- 제목 키워드 일치: 5%
+파이프라인: 후보 생성(의미 검색 + 선택적 BM25) → 선택적 크로스인코더 리랭킹 →
+최신성·학기·제목·필터 반영 재순위 → 상위 N청크.
 
-날짜가 없는 문서는 최신성 가산점 없이 평가합니다. 공지 크롤링·전처리 후에는 `backend/faiss_index`를 다시 생성하고 함께 배포해야 합니다.
+각 단계는 환경변수로 켜고 끌 수 있어, 바꾸기 전에 골든셋으로 A/B를 할 수 있습니다.
+
+| 환경변수 | 기본값 | 설명 |
+| --- | --- | --- |
+| `RETRIEVAL_CANDIDATES` | 60 | 재순위 전 후보 청크 수 |
+| `RETRIEVAL_RESULTS` | 6 | LLM에 전달할 청크 수 |
+| `RETRIEVAL_RECENCY_MODE` | semester | `semester`(학기 단위 감쇠) 또는 `exp`(기존) |
+| `RETRIEVAL_USE_BM25` | false | 키워드 검색을 RRF로 융합 (아래 주의) |
+| `RETRIEVAL_USE_RERANKER` | false | 크로스인코더 리랭킹 (**CPU에서는 켜지 마세요**) |
+| `RERANKER_MODEL` | BAAI/bge-reranker-base | 리랭커 모델 |
+| `RETRIEVAL_USE_METADATA_FILTER` | true | 선택한 단과대/태그를 점수에 반영 |
+| `INDEX_NAME` | faiss_index | 사용할 인덱스 디렉터리 |
+
+날짜가 없는 문서는 최신성 가산점 없이 평가합니다.
+
+BM25와 리랭커가 기본 비활성인 건 미완성이라서가 아니라 **측정 결과 때문입니다.**
+BM25는 상위권에서 44개 중 1개(노이즈 범위)를 더 맞히는 대신 Recall@20에서 2개를 잃고
+지연이 26% 늘어납니다. 리랭커는 정확도가 가장 좋지만 CPU에서 질문당 21~29초가 걸립니다.
+GPU 인스턴스로 옮긴다면 리랭커부터 켜세요. 근거는
+[backend/eval/README.md](./backend/eval/README.md)의 측정 기록에 있습니다.
+
+### 인덱싱 시 주의
+
+`make_vector_db.py`는 본문을 나눈 **뒤** 각 청크 앞에 제목·작성일·게시처를 다시 붙입니다.
+헤더를 붙인 문자열을 통째로 자르면 두 번째 이후 청크에 제목이 남지 않아, 정작 신청 기간이
+적힌 문단이 "어느 공지인지" 모르는 채로 임베딩됩니다. 크롤러가 문장 중간에 개행을 넣기 때문에
+분할 전에 공백 정규화도 함께 합니다.
+
+공지 크롤링·전처리 후에는 인덱스를 다시 생성하고 함께 배포해야 합니다.
+
+```powershell
+cd C:\workspace\chatbot\backend
+.\.venv\Scripts\python.exe make_vector_db.py --out faiss_index_v2
+```
+
+### 변경 전후 측정
+
+검색 로직을 바꿀 때는 반드시 `backend/eval/`의 골든셋으로 재보십시오. 자세한 내용은
+[backend/eval/README.md](./backend/eval/README.md)에 있습니다.
+
+```powershell
+.\.venv\Scripts\python.exe eval\run_eval.py --config legacy,improved
+```
 
 ## 운영 전 필수 작업
 

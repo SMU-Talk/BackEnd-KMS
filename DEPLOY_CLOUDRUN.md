@@ -155,6 +155,12 @@ gcloud run services update uninotice-backend `
 - 코드를 업데이트한 뒤 재배포는 4단계의 `gcloud run deploy` 명령을 그대로 다시
   실행하면 됩니다 (`--set-env-vars` 대신 이미 설정된 값은 유지하려면 `--update-env-vars` 사용).
 - 공지 크롤링·재인덱싱 후에는 `backend/faiss_index`를 커밋한 뒤 재배포합니다.
+- **`RETRIEVAL_USE_RERANKER`는 Cloud Run에서 켜지 마세요.** 크로스인코더 리랭커는 검색
+  정확도가 가장 좋지만(Recall@20 100%) CPU에서 질문당 21~29초가 걸려 사실상 타임아웃입니다.
+  모델도 1GB 이상이라 지금의 4Gi 안에서 bge-m3와 같이 올리면 OOM 위험이 있습니다.
+  측정치는 [backend/eval/README.md](./backend/eval/README.md)에 있습니다.
+- `/api/health`는 인덱스 적재 여부와 **직전 LLM 호출 실패**를 함께 반환합니다. 키가 폐기되면
+  `ready:false`와 함께 사유가 나오므로, 배포 후 첫 질문을 한 번 던져보고 헬스체크를 확인하세요.
 - 여러 인스턴스가 동시에 뜨는 트래픽이 늘어나면(예산이 허락한다면) `RATE_LIMIT_BACKEND=redis`로
   전환을 고려하세요. 지금 설정(memory)은 인스턴스마다 따로 세므로 인스턴스가 여러 개면
   레이트리밋이 느슨해질 수 있습니다(보안엔 문제 없고, 남용 방지 효과만 약해짐).
