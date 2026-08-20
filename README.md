@@ -113,7 +113,7 @@ npm.cmd run dev
 
 ## 운영 전 필수 작업
 
-1. ~~노출됐을 가능성이 있는 OpenAI 키를 폐기하고 새 키를 발급합니다.~~ 완료. 추가로 [OpenAI 사용량 대시보드](https://platform.openai.com/settings/organization/limits)에서 하드 스펜딩 리밋을 설정하세요. 이건 앱 코드가 대신할 수 없는, 계정에서 직접 해야 하는 조치입니다.
+1. [OpenAI 사용량 대시보드](https://platform.openai.com/settings/organization/limits)에서 하드 스펜딩 리밋을 설정하세요.
 2. 인증은 학교 SSO 스펙이 아직 없어 자체 회원가입(학번+비밀번호, PBKDF2 해시)으로 구현했습니다. 학교가 정식 SSO(OAuth2/OIDC, SAML 등) 연동 스펙을 제공하면 `backend/main.py`의 `/api/login`, `/api/signup`을 교체합니다.
 3. 여러 서버 인스턴스로 확장할 때는 `.env`에서 `RATE_LIMIT_BACKEND=redis`와 `REDIS_URL`을 설정하고 `pip install redis`를 실행하면 됩니다. 코드 구조는 이미 양쪽 백엔드를 모두 지원합니다.
 4. 개인정보 처리, 공지 데이터 사용 범위, 외부 API 연동은 학교 담당 부서의 승인을 받습니다. (완료)
