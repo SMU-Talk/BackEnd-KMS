@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { askChat, sendFeedback } from "../services/api";
 import CampusMapModal from "./CampusMapModal";
+import ExamPapersModal from "./ExamPapersModal";
 
 const suggestions = [
   "기숙사 신청 일정 알려줘",
@@ -53,10 +54,11 @@ function AnswerFeedback({ messageId, onFeedback }) {
   );
 }
 
-export default function ChatPanel({ filters, messages, setMessages, conversationId, setConversationId, onReset }) {
+export default function ChatPanel({ filters, messages, setMessages, conversationId, setConversationId, onReset, user }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [showMap, setShowMap] = useState(false);
+  const [showExams, setShowExams] = useState(false);
 
   const send = async (value = input) => {
     const message = value.trim();
@@ -103,6 +105,7 @@ export default function ChatPanel({ filters, messages, setMessages, conversation
         <span>🤖</span>
         <div><b>학과 공지 AI 어시스턴트</b><small>검토된 학교 공지를 검색합니다</small></div>
         <i>● 응답 가능</i>
+        <button className="map-button" onClick={() => setShowExams(true)}>📄 고사문제지</button>
         <button className="map-button" onClick={() => setShowMap(true)}>🗺️ 학교 맵</button>
         <button onClick={reset}>초기화</button>
       </header>
@@ -113,6 +116,7 @@ export default function ChatPanel({ filters, messages, setMessages, conversation
       </section>
       <form className="chat-input" onSubmit={(event) => { event.preventDefault(); send(); }}><textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); send(); } }} placeholder="학교 공지사항에 대해 질문해 보세요!" rows="1" /><button disabled={!input.trim() || loading} aria-label="질문 전송">➤</button></form>
       {showMap && <CampusMapModal onClose={() => setShowMap(false)} />}
+      {showExams && <ExamPapersModal onClose={() => setShowExams(false)} defaultStudentId={user?.id || ""} />}
     </main>
   );
 }

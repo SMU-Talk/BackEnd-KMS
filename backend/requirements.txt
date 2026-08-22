@@ -10,4 +10,5 @@ faiss-cpu
 sentence-transformers
 langchain-text-splitters
 rank_bm25
+pypdf
 turso_serverless

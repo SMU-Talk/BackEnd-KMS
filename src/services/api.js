@@ -157,6 +157,64 @@ export async function syncGradesFromPortal({ studentId, studentName, password })
   });
 }
 
+export async function getExamPapers() {
+  if (USE_MOCK) {
+    await wait(200);
+    return { papers: [] };
+  }
+  return request("/exams");
+}
+
+export async function syncExamPapers({ studentId, password, schYear, semester, subjectName, examDiv }) {
+  if (USE_MOCK) {
+    await wait(600);
+    return { success: true, papersSynced: 0 };
+  }
+  return request("/exams/sync", {
+    method: "POST",
+    body: JSON.stringify({ studentId, password, schYear, semester, subjectName, examDiv }),
+  });
+}
+
+/** 첨부파일을 받아 브라우저 다운로드를 실행하고 저장된 파일명을 반환합니다.
+ *
+ * 조회할 때 서버가 파일을 받아 두므로 보통은 자격증명이 필요 없습니다. 저장된
+ * 사본이 없을 때만 서버가 409로 알려 주고, 그때 studentId/password가 쓰입니다.
+ */
+export async function downloadExamAttachment({ attachmentId, fileName, studentId, password }) {
+  if (USE_MOCK) {
+    await wait(400);
+    return fileName;
+  }
+
+  // 이 응답만 JSON이 아니라 파일 바이트라서 request()를 쓰지 않습니다.
+  const response = await fetch(`${API_BASE_URL}/exams/attachments/${attachmentId}/download`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+    },
+    body: JSON.stringify({ studentId, password }),
+  });
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.detail || "첨부파일을 내려받지 못했습니다.");
+  }
+
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName || "첨부파일";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  // 즉시 해제하면 저장이 시작되기 전에 blob이 사라지는 브라우저가 있습니다.
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  return link.download;
+}
+
 export async function parseGradesPreview(rawText) {
   if (USE_MOCK) {
     await wait(200);

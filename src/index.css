@@ -197,6 +197,36 @@ button { cursor: pointer; }
 .ok { color: var(--success-text); }
 .pending { color: var(--danger-text); }
 
+/* 고사문제지 조회 모달 (오버레이는 학교 맵과 공유) */
+.exam-modal { display: flex; flex-direction: column; gap: 12px; width: min(720px, 100%); max-height: min(760px, 90vh); padding: 18px; border-radius: 18px; background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow); }
+.exam-modal header { display: flex; align-items: center; justify-content: space-between; }
+.exam-modal header b { font-size: 14px; color: var(--text); }
+.exam-modal header button { border: 0; background: transparent; color: var(--text-muted); font-size: 16px; }
+.exam-search { display: grid; gap: 8px; }
+.exam-search-row { display: grid; grid-template-columns: repeat(3, auto) 1fr; gap: 6px; }
+.exam-search select, .exam-search input, .exam-credentials input { padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--surface-2); color: var(--text); font-size: 12px; font-family: inherit; }
+.exam-credentials { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.exam-sync-button { padding: 9px 12px; border: 1px solid var(--accent-1); border-radius: 9px; background: var(--accent-wash-strong); color: var(--accent-text); font-size: 12px; font-weight: 700; cursor: pointer; }
+.exam-sync-button:disabled { opacity: 0.55; cursor: default; }
+.exam-note { margin: 0; color: var(--text-dimmer); font-size: 11px; line-height: 1.5; }
+.exam-notice { margin: 0; padding: 9px 11px; border-radius: 9px; background: var(--success-bg); color: var(--success-text); font-size: 12px; font-weight: 700; }
+.exam-error { margin: 0; padding: 9px 11px; border-radius: 9px; background: var(--danger-bg); color: var(--danger-text); font-size: 12px; }
+.exam-list { flex: 1; overflow-y: auto; display: grid; gap: 8px; align-content: start; }
+.exam-list h2 { margin: 0; color: var(--text-dimmer); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; }
+.exam-list h2 small { text-transform: none; letter-spacing: 0; }
+.exam-empty { margin: 0; color: var(--text-dimmer); font-size: 12px; }
+.exam-item { display: grid; gap: 5px; padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: 10px; }
+.exam-item-head { display: flex; align-items: center; gap: 8px; }
+.exam-item-head b { font-size: 13px; color: var(--text); }
+.exam-item-tag { padding: 2px 7px; border-radius: 999px; background: var(--accent-wash); color: var(--accent-soft); font-size: 10px; }
+.exam-item small { color: var(--text-dimmer); font-size: 11px; }
+/* 문제 전문. 원문 줄바꿈을 살리되 긴 줄은 접어서 가로 스크롤을 만들지 않습니다. */
+.exam-content { margin: 2px 0 0; padding: 9px 11px; max-height: 260px; overflow-y: auto; border-radius: 8px; background: var(--surface-2); color: var(--text-5); font-family: inherit; font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.exam-download-button { display: flex; align-items: center; gap: 6px; width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); color: var(--text-4); font-size: 11px; text-align: left; cursor: pointer; }
+.exam-download-button:disabled { opacity: 0.55; cursor: default; }
+.exam-download-button em { margin-left: auto; font-style: normal; color: var(--text-dimmer); }
+@media (max-width: 720px) { .exam-search-row, .exam-credentials { grid-template-columns: 1fr; } }
+
 @media (max-width: 720px) { .login-card { grid-template-columns: 1fr; width: min(360px, 100%); }.login-brand { display: none; }.app-shell { display: block; overflow: auto; }.sidebar { width: 100%; min-height: auto; }.sidebar-content { display: none; }.chat-panel { min-height: calc(100vh - 82px); }.chat-header { padding: 12px; }.chat-header i { display: none; }.messages { padding: 18px 12px; }.message { max-width: 88%; }.chat-input { padding: 12px; }.grad-panel { display: none; } }
 
 .citations {
