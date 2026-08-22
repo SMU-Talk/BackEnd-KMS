@@ -47,6 +47,13 @@ class RetrievalConfig:
     rerank_pool: int = 50
     use_metadata_filter: bool = False
     metadata_boost: float = 0.10
+    # 이 점수를 넘는 문서가 하나도 없으면 빈 결과를 돌려줍니다. 인사말이나 학교와
+    # 무관한 질문에도 FAISS는 늘 "가장 가까운" 문서를 주기 때문에, 그대로 두면
+    # 관계없는 공지가 근거처럼 딸려 나갑니다.
+    #
+    # 측정값(현 인덱스): 범위 밖 질문("안녕" 0.21, "날씨" 0.27, "파이썬" 0.25) vs
+    # 범위 안 질문("기숙사" 0.53, "장학금" 0.66, "졸업요건" 0.62). 그 사이인 0.35로 둡니다.
+    min_relevance: float = 0.35
 
     @classmethod
     def from_env(cls) -> "RetrievalConfig":
@@ -69,6 +76,7 @@ class RetrievalConfig:
             recency_weight=float(os.getenv("RETRIEVAL_RECENCY_WEIGHT", "0.12")),
             keyword_weight=float(os.getenv("RETRIEVAL_KEYWORD_WEIGHT", "0.08")),
             recency_mode=os.getenv("RETRIEVAL_RECENCY_MODE", "semester"),
+            min_relevance=float(os.getenv("RETRIEVAL_MIN_RELEVANCE", "0.35")),
             use_bm25=flag("RETRIEVAL_USE_BM25", "false"),
             use_reranker=flag("RETRIEVAL_USE_RERANKER", "false"),
             use_metadata_filter=flag("RETRIEVAL_USE_METADATA_FILTER", "true"),
@@ -284,6 +292,19 @@ class Retriever:
         pool_size = max(config.candidates, config.rerank_pool if config.use_reranker else 0)
 
         dense = self._dense_candidates(question, pool_size)
+
+        # 충분히 가까운 문서가 하나도 없으면 아무것도 돌려주지 않습니다. 근거가 없는
+        # 질문에 무관한 공지를 붙여 보내면 모델이 그걸 끌어다 쓰고, 출처 목록에도
+        # 엉뚱한 공지가 남습니다.
+        if dense and max(score for _, _, score in dense) < config.min_relevance:
+            logger.info(
+                "관련 문서 없음(최고 점수 %.3f < %.2f): %s",
+                max(score for _, _, score in dense),
+                config.min_relevance,
+                question[:40],
+            )
+            return []
+
         documents = {key: doc for key, doc, _ in dense}
         relevance = {key: score for key, _, score in dense}
 
