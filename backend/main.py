@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Literal, Optional
 from urllib.parse import quote
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -57,6 +58,10 @@ from retrieval import (
     unique_citations,
 )
 from smul_client import SmulFetchError, SmulLoginError, fetch_grades as fetch_smul_grades
+
+# backend/.env 에 넣어 둔 설정을 읽습니다(OPENAI_API_KEY 등). 이미 셸에 설정된 환경
+# 변수가 우선이라, 배포 환경의 주입 값을 덮어쓰지 않습니다.
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 # uvicorn은 자기 로거만 설정하므로, 이 저장소 모듈들의 로그는 기본값(WARNING)에서
 # 묻힙니다. 포털 연동은 응답 구조가 바뀌면 조용히 실패하는 종류의 코드라, 진단에

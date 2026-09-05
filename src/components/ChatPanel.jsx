@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { askChat, sendFeedback } from "../services/api";
-import CampusMapModal from "./CampusMapModal";
+import CampusMapModal from "../campusMap/CampusMapModal";
 import ExamPapersModal from "./ExamPapersModal";
 
 const suggestions = [

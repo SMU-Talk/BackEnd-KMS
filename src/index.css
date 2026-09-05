@@ -153,6 +153,11 @@ button { cursor: pointer; }
 .campus-map-error { margin: auto; color: var(--danger-text); font-size: 13px; text-align: center; }
 .campus-map-note { margin: 0; color: var(--text-dimmer); font-size: 11px; }
 .campus-map-label { padding: 3px 7px; border-radius: 6px; background: var(--surface); border: 1px solid var(--border-strong); color: var(--text); font-size: 11px; font-weight: 700; white-space: nowrap; }
+.campus-map-endpoint { padding: 3px 9px; border-radius: 999px; background: #1c7ed6; color: #fff; font-size: 11px; font-weight: 700; white-space: nowrap; box-shadow: 0 1px 4px rgb(0 0 0 / 0.3); }
+.campus-map-legend { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--text-dimmer); font-size: 11px; }
+.campus-map-legend span { width: 18px; height: 3px; border-radius: 2px; }
+.campus-map-legend-walk { background: #1c7ed6; }
+.campus-map-legend-esc { margin-left: 8px; background: repeating-linear-gradient(90deg, #e8590c 0 5px, transparent 5px 9px); height: 4px; }
 .message { display: flex; max-width: 70%; gap: 10px; }.message.user { align-self: flex-end; flex-direction: row-reverse; }.message > span { display: grid; width: 32px; height: 32px; flex: 0 0 32px; place-items: center; border-radius: 50%; background: var(--surface-2); border: 1px solid var(--border-strong); font-size: 13px; }.message.user > span { border: 0; background: var(--accent-gradient); }.message > div { padding: 11px 14px; border: 1px solid var(--border); border-radius: 16px 16px 16px 3px; background: var(--surface-2); color: var(--text-2); font-size: 14px; line-height: 1.65; white-space: pre-wrap; }.message.user > div { border: 0; border-radius: 16px 16px 3px 16px; background: var(--accent-gradient); color: var(--on-accent); }.message p { margin: 0; }.message ul { margin: 10px 0 0; padding-left: 16px; }.message a { color: inherit; }.typing { color: var(--text-muted); }
 .chat-input { display: flex; gap: 10px; margin: 0; padding: 16px 24px; border-top: 1px solid var(--border); background: var(--surface-translucent); }.chat-input textarea { min-height: 46px; max-height: 120px; resize: vertical; padding: 12px 52px 12px 14px; }.chat-input button { width: 46px; height: 46px; flex: 0 0 46px; font-size: 18px; }.chat-input button:disabled { opacity: .4; }
 

@@ -12,3 +12,4 @@ langchain-text-splitters
 rank_bm25
 pypdf
 turso_serverless
+python-dotenv

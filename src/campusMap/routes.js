@@ -2,8 +2,11 @@
 // 좌표 기반 카카오맵 경로는 실외 도로를 따라가지만, 여기서는 건물 내부 고저차와
 // 지름길을 반영한 실제 체감 소요 시간(초)으로 최단 경로를 계산합니다.
 //
-// 명시되지 않은 "같은 건물 내부 층간 이동"은 계단 15초/층, 엘리베이터
-// (R·G·U·N관만 보유) 고정 40초로 가정했습니다. 실측치가 생기면 EDGES를 갱신하세요.
+// 층간 이동 시간은 제보 실측치가 있으면 그 값을 쓰고(자하관·제1공학관 30초,
+// 학술정보관 1층↔4층 40초), 없는 구간만 계단 15초/층으로 가정했습니다.
+// 가정치가 남아 있는 곳은 EDGES에 주석으로 표시해 두었습니다.
+
+import { CAMPUS_BUILDINGS } from "./buildings.js";
 
 export const BUILDING_TO_NODE = {
   "경영경제대학관(구 밀레니엄관)": "T_ESC",
@@ -11,9 +14,12 @@ export const BUILDING_TO_NODE = {
   "가정관": "C_HOME",
   "미래백년관": "R_B1",
   "사범대학관": "A_3F",
-  "학술정보관": "L_4F",
-  "제1공학관": "G_3F",
-  "인문사회과학대학관(자하관)": "N_3F",
+  // 학술정보관은 1층 정문이 기본이고, 4층에서 출발/도착하는 경우를 위해 따로도 고를
+  // 수 있게 해 두었습니다. 두 노드는 계단 40초로 이어져 있어 더 빠른 쪽이 선택됩니다.
+  "학술정보관": "L_1F",
+  "학술정보관 4층": "L_4F",
+  "제1공학관": "G_1F",
+  "인문사회과학대학관(자하관)": "N_1F",
   "월해관(문화예술대학관 1관)": "M_4F",
   // 제2교수회관은 월해관과 같은 건물로 취급(제보 기준)
   "제2교수회관": "M_4F",
@@ -39,7 +45,64 @@ export const UPPER_CAMPUS_BUILDINGS = new Set([
 
 export const ESCALATOR_GATEWAY_BUILDING = "경영경제대학관(구 밀레니엄관)";
 
+// 지도에 경로선을 그리려면 노드마다 좌표가 있어야 합니다. 건물에 붙은 노드는
+// buildings.js의 건물 좌표를 그대로 쓰고, 건물 사이에 있는 지점(에스컬레이터 등)만
+// 따로 잡았습니다.
+//
+// 에스컬레이터: 경영경제대학관(T) 남서쪽 아래에서 미술관(B) 남쪽 꼭짓점까지
+// 지도상 수직(남북) 방향으로 이어집니다. 아래는 제보받은 실측 좌표입니다.
+// 남북 방향이라 두 지점의 경도는 같습니다.
+export const ESCALATOR_BOTTOM = { lat: 37.6019, lng: 126.9557 };
+export const ESCALATOR_TOP = { lat: 37.6027, lng: 126.9557 };
+const ESCALATOR_MIDDLE = {
+  lat: (ESCALATOR_BOTTOM.lat + ESCALATOR_TOP.lat) / 2,
+  lng: ESCALATOR_BOTTOM.lng,
+};
+
+// 미래백년관·학술정보관 옥상·사범대학관을 오갈 때 세 경로가 공통으로 지나는 갈림길.
+// 좌표는 제보값이고, 세 구간의 기존 실측치(60·120·90초)가 이 지점을 경유하는 것으로
+// 정확히 맞아떨어져서(45+15, 45+75, 15+75) 각 구간 시간을 그대로 나눌 수 있었습니다.
+export const CENTER_JUNCTION = { lat: 37.6025, lng: 126.9551 };
+
+const buildingCoord = (name) => {
+  const building = CAMPUS_BUILDINGS.find((item) => item.name === name);
+  return building ? { lat: building.lat, lng: building.lng } : null;
+};
+
+export const NODE_COORDS = {
+  MID_JUNCTION: CENTER_JUNCTION,
+  T_ESC: ESCALATOR_BOTTOM,
+  T3: buildingCoord("경영경제대학관(구 밀레니엄관)"),
+  T_ROOF: buildingCoord("경영경제대학관(구 밀레니엄관)"),
+  ESC_MID: ESCALATOR_MIDDLE,
+  ESC_TOP: ESCALATOR_TOP,
+  R_B1: buildingCoord("미래백년관"),
+  R_4F: buildingCoord("미래백년관"),
+  C_HOME: buildingCoord("가정관"),
+  A_3F: buildingCoord("사범대학관"),
+  L_ROOF: buildingCoord("학술정보관"),
+  L_4F: buildingCoord("학술정보관"),
+  L_1F: buildingCoord("학술정보관"),
+  G_3F: buildingCoord("제1공학관"),
+  G_1F: buildingCoord("제1공학관"),
+  N_3F: buildingCoord("인문사회과학대학관(자하관)"),
+  N_1F: buildingCoord("인문사회과학대학관(자하관)"),
+  M_4F: buildingCoord("월해관(문화예술대학관 1관)"),
+  E_BLD: buildingCoord("학군단"),
+  D_BLD: buildingCoord("생활예술관"),
+  F_BLD: buildingCoord("체육관"),
+  U_BLD: buildingCoord("상명아트센터(문화예술관)"),
+};
+
+// 에스컬레이터 구간은 지도에서 다르게(점선 등) 그리려고 따로 표시합니다.
+const ESCALATOR_NODES = new Set(["T_ESC", "ESC_MID", "ESC_TOP"]);
+
+export function isEscalatorSegment(fromNode, toNode) {
+  return ESCALATOR_NODES.has(fromNode) && ESCALATOR_NODES.has(toNode);
+}
+
 const NODE_LABELS = {
+  MID_JUNCTION: "미백관·학술정보관·사범대 갈림길",
   T_ESC: "경영경제대학관(T) 1층 · 에스컬레이터 앞",
   T3: "경영경제대학관(T) 3층",
   T_ROOF: "경영경제대학관(T) 옥상",
@@ -51,8 +114,11 @@ const NODE_LABELS = {
   A_3F: "사범대학관(A) 3층",
   L_ROOF: "학술정보관(L) 옥상",
   L_4F: "학술정보관(L) 4층",
+  L_1F: "학술정보관(L) 1층",
   G_3F: "제1공학관(G) 3층",
+  G_1F: "제1공학관(G) 1층",
   N_3F: "인문사회과학대학관(N, 자하관) 3층",
+  N_1F: "인문사회과학대학관(N, 자하관) 1층",
   M_4F: "월해관(M) 4층 정문 · 제2교수회관(I)",
   E_BLD: "학군단(E)",
   D_BLD: "생활예술관(D)",
@@ -66,11 +132,14 @@ const EDGES = [
   { from: "ESC_MID", to: "ESC_TOP", seconds: 90, oneWay: true },
   { from: "ESC_TOP", to: "R_4F", seconds: 20 },
   { from: "ESC_TOP", to: "M_4F", seconds: 90 },
-  { from: "R_B1", to: "A_3F", seconds: 60 },
-  { from: "R_B1", to: "L_ROOF", seconds: 120 },
+  // 이 세 구간은 갈림길(MID_JUNCTION)을 함께 지납니다. 직선 간선으로 두면 지도에
+  // 실제로 지나지 않는 선이 그려져서, 경유 지점을 넣고 시간을 쪼갰습니다.
+  // 합계는 기존 실측치와 동일합니다: R-A 60, R-L 120, L-A 90.
+  { from: "R_B1", to: "MID_JUNCTION", seconds: 45 },
+  { from: "A_3F", to: "MID_JUNCTION", seconds: 15 },
+  { from: "L_ROOF", to: "MID_JUNCTION", seconds: 75 },
   { from: "R_4F", to: "C_HOME", seconds: 90 },
   { from: "R_4F", to: "T_ROOF", seconds: 60 },
-  { from: "L_ROOF", to: "A_3F", seconds: 90 },
   { from: "G_3F", to: "N_3F", seconds: 20 },
   { from: "ESC_TOP", to: "E_BLD", seconds: 60 },
   { from: "ESC_TOP", to: "D_BLD", seconds: 80 },
@@ -90,6 +159,17 @@ const EDGES = [
   { from: "L_4F", to: "L_ROOF", seconds: 30 },
   { from: "T_ESC", to: "T3", seconds: 60 },
   { from: "T3", to: "T_ROOF", seconds: 60 },
+  // 자하관·제1공학관과 캠퍼스 나머지를 잇는 1층 구간 (제보 실측치).
+  // 이 네 간선이 생기기 전에는 G·N 두 노드가 서로만 연결된 섬이라, 나머지 12개
+  // 건물과의 48개 조합이 전부 "경로 없음"이었습니다.
+  { from: "N_1F", to: "L_1F", seconds: 50 },
+  { from: "G_1F", to: "L_1F", seconds: 30 },
+  { from: "N_1F", to: "T_ESC", seconds: 80 },
+  { from: "G_1F", to: "T_ESC", seconds: 60 },
+  // 건물 내부 층간 이동 (제보 실측치).
+  { from: "N_1F", to: "N_3F", seconds: 30 },
+  { from: "G_1F", to: "G_3F", seconds: 30 },
+  { from: "L_1F", to: "L_4F", seconds: 40 },
 ];
 
 function buildAdjacency() {
@@ -153,9 +233,26 @@ export function describeRoute(fromBuildingName, toBuildingName) {
   const result = findShortestRoute(fromNode, toNode);
   if (!result) return null;
 
+  // 지도에 그릴 구간들. 같은 좌표가 연속되는 층간 이동(예: T관 1층 -> 3층)은
+  // 선으로 그릴 게 없으므로 건너뜁니다.
+  const segments = [];
+  for (let index = 0; index < result.path.length - 1; index += 1) {
+    const from = NODE_COORDS[result.path[index]];
+    const to = NODE_COORDS[result.path[index + 1]];
+    if (!from || !to) continue;
+    if (from.lat === to.lat && from.lng === to.lng) continue;
+    segments.push({
+      from,
+      to,
+      escalator: isEscalatorSegment(result.path[index], result.path[index + 1]),
+    });
+  }
+
   return {
     seconds: result.seconds,
+    path: result.path,
     steps: result.path.map((nodeId) => NODE_LABELS[nodeId] || nodeId),
+    segments,
   };
 }
 

@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CAMPUS_BUILDINGS, kakaoDirectionsUrl, kakaoToUrl } from "../data/campusMap";
+import { CAMPUS_BUILDINGS, kakaoDirectionsUrl, kakaoToUrl } from "./buildings.js";
 import {
   BUILDING_TO_NODE,
   ESCALATOR_GATEWAY_BUILDING,
   UPPER_CAMPUS_BUILDINGS,
   describeRoute,
   formatDuration,
-} from "../data/campusRoutes";
+} from "./routes.js";
 
 const ROUTE_OPTION_NAMES = [
   ...CAMPUS_BUILDINGS.map((building) => building.name),
@@ -31,9 +31,20 @@ function loadKakaoMaps() {
   return kakaoLoadPromise;
 }
 
+/** 건물이 모두 보이도록 화면을 맞춥니다. level 고정보다 화면 크기에 잘 견딥니다. */
+function fitToBuildings(kakao, map) {
+  const bounds = new kakao.maps.LatLngBounds();
+  CAMPUS_BUILDINGS.forEach((building) => bounds.extend(new kakao.maps.LatLng(building.lat, building.lng)));
+  map.setBounds(bounds, 24, 24, 24, 24);
+}
+
 export default function CampusMapModal({ onClose }) {
   const mapRef = useRef(null);
+  const kakaoRef = useRef(null);
+  const mapObjectRef = useRef(null);
+  const overlaysRef = useRef([]); // 경로를 다시 그릴 때 지울 선/마커
   const [error, setError] = useState(null);
+  const [mapReady, setMapReady] = useState(false);
   const [fromName, setFromName] = useState("");
   const [toName, setToName] = useState("");
 
@@ -43,8 +54,13 @@ export default function CampusMapModal({ onClose }) {
     loadKakaoMaps()
       .then((kakao) => {
         if (cancelled || !mapRef.current) return;
-        const center = new kakao.maps.LatLng(37.6024, 126.9553);
-        const map = new kakao.maps.Map(mapRef.current, { center, level: 4 });
+        const map = new kakao.maps.Map(mapRef.current, {
+          center: new kakao.maps.LatLng(37.6026, 126.9554),
+          level: 2,
+        });
+        kakaoRef.current = kakao;
+        mapObjectRef.current = map;
+
         CAMPUS_BUILDINGS.forEach((building) => {
           const position = new kakao.maps.LatLng(building.lat, building.lng);
           const marker = new kakao.maps.Marker({ position, map });
@@ -56,6 +72,9 @@ export default function CampusMapModal({ onClose }) {
           overlay.setMap(map);
           kakao.maps.event.addListener(marker, "click", () => window.open(kakaoToUrl(building), "_blank", "noopener"));
         });
+
+        fitToBuildings(kakao, map);
+        setMapReady(true);
       })
       .catch(() => {
         if (!cancelled) setError("카카오맵을 불러오지 못했습니다. API 키와 도메인 등록을 확인해 주세요.");
@@ -91,6 +110,57 @@ export default function CampusMapModal({ onClose }) {
   );
   const gatewayBuilding = CAMPUS_BUILDINGS.find((building) => building.name === ESCALATOR_GATEWAY_BUILDING);
   const gatewayLegUrl = gatewayRoute && from && gatewayBuilding ? kakaoDirectionsUrl(from, gatewayBuilding) : null;
+
+  const drawnRoute = internalRoute || gatewayRoute;
+
+  // 선택된 경로를 지도 위에 직접 그립니다. 카카오맵 사이트로 나가지 않고 여기서 봅니다.
+  useEffect(() => {
+    const kakao = kakaoRef.current;
+    const map = mapObjectRef.current;
+    if (!mapReady || !kakao || !map) return;
+
+    overlaysRef.current.forEach((item) => item.setMap(null));
+    overlaysRef.current = [];
+
+    if (!drawnRoute?.segments?.length) {
+      fitToBuildings(kakao, map);
+      return;
+    }
+
+    const bounds = new kakao.maps.LatLngBounds();
+    drawnRoute.segments.forEach((segment) => {
+      const path = [
+        new kakao.maps.LatLng(segment.from.lat, segment.from.lng),
+        new kakao.maps.LatLng(segment.to.lat, segment.to.lng),
+      ];
+      path.forEach((point) => bounds.extend(point));
+      const line = new kakao.maps.Polyline({
+        map,
+        path,
+        strokeWeight: segment.escalator ? 8 : 6,
+        strokeColor: segment.escalator ? "#e8590c" : "#1c7ed6",
+        strokeOpacity: 0.9,
+        strokeStyle: segment.escalator ? "shortdash" : "solid",
+      });
+      overlaysRef.current.push(line);
+    });
+
+    const endpoints = [
+      { point: drawnRoute.segments[0].from, text: "출발" },
+      { point: drawnRoute.segments[drawnRoute.segments.length - 1].to, text: "도착" },
+    ];
+    endpoints.forEach(({ point, text }) => {
+      const marker = new kakao.maps.CustomOverlay({
+        map,
+        position: new kakao.maps.LatLng(point.lat, point.lng),
+        yAnchor: 1.8,
+        content: `<div class="campus-map-endpoint">${text}</div>`,
+      });
+      overlaysRef.current.push(marker);
+    });
+
+    map.setBounds(bounds, 60, 60, 60, 60);
+  }, [drawnRoute, mapReady]);
 
   return (
     <div className="campus-map-overlay" onClick={onClose}>
@@ -132,7 +202,7 @@ export default function CampusMapModal({ onClose }) {
               if (!canRoute) event.preventDefault();
             }}
           >
-            카카오맵에서 길찾기 ↗
+            카카오맵에서 열기 ↗
           </a>
         </div>
         {internalRoute && (
@@ -157,8 +227,20 @@ export default function CampusMapModal({ onClose }) {
             <small>미술관보다 위쪽 건물은 보통 T관 1층에서 에스컬레이터를 타고 이동합니다.</small>
           </div>
         )}
+        {canRoute && !internalRoute && !gatewayRoute && (
+          <p className="campus-map-note">
+            이 구간은 건물 내부를 지나는 지름길이 없어 일반 도보로 이동합니다. 위
+            &ldquo;카카오맵에서 열기&rdquo;로 길안내를 확인하세요.
+          </p>
+        )}
         {displayedError ? <p className="campus-map-error">{displayedError}</p> : <div className="campus-map-canvas" ref={mapRef} />}
-        <p className="campus-map-note">지도의 마커를 클릭해도 해당 건물로 카카오맵 길찾기가 열립니다.</p>
+        {drawnRoute && !displayedError && (
+          <p className="campus-map-legend">
+            <span className="campus-map-legend-walk" /> 도보
+            <span className="campus-map-legend-esc" /> 에스컬레이터
+          </p>
+        )}
+        <p className="campus-map-note">지도의 마커를 클릭하면 해당 건물로 카카오맵 길찾기가 열립니다.</p>
       </div>
     </div>
   );
