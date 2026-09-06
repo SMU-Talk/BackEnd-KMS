@@ -1,19 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CAMPUS_BUILDINGS, kakaoDirectionsUrl, kakaoToUrl } from "./buildings.js";
-import {
-  BUILDING_TO_NODE,
-  ESCALATOR_GATEWAY_BUILDING,
-  UPPER_CAMPUS_BUILDINGS,
-  describeRoute,
-  formatDuration,
-} from "./routes.js";
+import { describeRoute } from "./routes.js";
 
-const ROUTE_OPTION_NAMES = [
-  ...CAMPUS_BUILDINGS.map((building) => building.name),
-  ...Object.keys(BUILDING_TO_NODE).filter(
-    (name) => !CAMPUS_BUILDINGS.some((building) => building.name === name)
-  ),
-];
+// 선택 목록은 지도에 실제로 표시되는 건물만 씁니다. 예전에는 노드 목록에서도
+// 이름을 끌어와 "학술정보관 4층"처럼 층 단위 항목이 섞여 나왔습니다.
+const ROUTE_OPTION_NAMES = CAMPUS_BUILDINGS.map((building) => building.name);
 
 const KAKAO_KEY = import.meta.env.VITE_KAKAO_MAP_KEY;
 let kakaoLoadPromise = null;
@@ -93,25 +84,9 @@ export default function CampusMapModal({ onClose }) {
     [fromName, toName]
   );
 
-  // 목적지가 상단 구역 건물이고, 출발지에서 곧장 이어지는 지름길이 없다면
-  // "T관까지 이동 → 에스컬레이터"를 안내합니다 (하단→상단은 늘 에스컬레이터 경유).
-  const needsEscalatorGateway = Boolean(
-    !internalRoute &&
-      fromName &&
-      toName &&
-      fromName !== toName &&
-      fromName !== ESCALATOR_GATEWAY_BUILDING &&
-      UPPER_CAMPUS_BUILDINGS.has(toName) &&
-      !UPPER_CAMPUS_BUILDINGS.has(fromName)
-  );
-  const gatewayRoute = useMemo(
-    () => (needsEscalatorGateway ? describeRoute(ESCALATOR_GATEWAY_BUILDING, toName) : null),
-    [needsEscalatorGateway, toName]
-  );
-  const gatewayBuilding = CAMPUS_BUILDINGS.find((building) => building.name === ESCALATOR_GATEWAY_BUILDING);
-  const gatewayLegUrl = gatewayRoute && from && gatewayBuilding ? kakaoDirectionsUrl(from, gatewayBuilding) : null;
-
-  const drawnRoute = internalRoute || gatewayRoute;
+  // 에스컬레이터 경유 안내는 그래프가 모든 건물을 이어주면서 필요가 없어졌습니다.
+  // 이제 describeRoute가 에스컬레이터 구간까지 포함한 전체 경로를 돌려줍니다.
+  const drawnRoute = internalRoute;
 
   // 선택된 경로를 지도 위에 직접 그립니다. 카카오맵 사이트로 나가지 않고 여기서 봅니다.
   useEffect(() => {
@@ -207,27 +182,12 @@ export default function CampusMapModal({ onClose }) {
         </div>
         {internalRoute && (
           <div className="campus-map-internal-route">
-            <b>🏫 캠퍼스 내부 지름길 · 약 {formatDuration(internalRoute.seconds)}</b>
+            <b>🏫 캠퍼스 내부 지름길</b>
             <ol>{internalRoute.steps.map((step, index) => <li key={index}>{step}</li>)}</ol>
             <small>학생 제보 기반 경로입니다. 실외 도로를 따라가는 카카오맵 경로보다 빠를 수 있어요.</small>
           </div>
         )}
-        {gatewayRoute && (
-          <div className="campus-map-internal-route">
-            <b>🏫 에스컬레이터 경유 · 이후 구간 약 {formatDuration(gatewayRoute.seconds)}</b>
-            <ol>
-              <li>
-                {fromName} → 경영경제대학관(T) 1층{" "}
-                {gatewayLegUrl && (
-                  <a href={gatewayLegUrl} target="_blank" rel="noreferrer">(카카오맵 ↗)</a>
-                )}
-              </li>
-              {gatewayRoute.steps.slice(1).map((step, index) => <li key={index}>{step}</li>)}
-            </ol>
-            <small>미술관보다 위쪽 건물은 보통 T관 1층에서 에스컬레이터를 타고 이동합니다.</small>
-          </div>
-        )}
-        {canRoute && !internalRoute && !gatewayRoute && (
+        {canRoute && !internalRoute && (
           <p className="campus-map-note">
             이 구간은 건물 내부를 지나는 지름길이 없어 일반 도보로 이동합니다. 위
             &ldquo;카카오맵에서 열기&rdquo;로 길안내를 확인하세요.
