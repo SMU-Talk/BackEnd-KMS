@@ -147,6 +147,7 @@ export default function App() {
           onDeleteConversation={deleteConversation}
         />
         <ChatPanel
+          user={user}
           filters={filters}
           messages={messages}
           setMessages={setMessages}

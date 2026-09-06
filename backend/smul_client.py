@@ -142,6 +142,71 @@ async def _follow_auto_submit_forms(
     return response
 
 
+# 로그인 실패 페이지가 자바스크립트 alert/변수로 사유를 담아 내려주는 형태들.
+_FAILURE_MESSAGE_PATTERNS = (
+    re.compile(r"alert\(\s*[\"']([^\"']{4,200})[\"']\s*\)"),
+    re.compile(r"(?:errMsg|errorMsg|resultMsg|msg)\s*=\s*[\"']([^\"']{4,200})[\"']"),
+)
+# 실제로 OTP 단계에 들어갔을 때만 나타나는 신호. `input_motp_rdo` 문자열 자체는
+# 로그인 전 페이지의 스크립트에도 늘 들어 있어서 판별 근거가 되지 못한다.
+_OTP_CHALLENGE_PATTERNS = (
+    re.compile(r"인증번호를\s*입력"),
+    re.compile(r"2\s*차\s*인증"),
+    re.compile(r"OTP\s*인증"),
+)
+
+
+SCRIPT_BLOCK_RE = re.compile(r"<script\b.*?</script>", re.IGNORECASE | re.DOTALL)
+
+
+def _decode_js_escapes(text: str) -> str:
+    """\\uXXXX 로 인코딩된 한글 메시지를 사람이 읽을 수 있게 되돌린다."""
+    return re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), text)
+
+
+def _visible_markup(html: str) -> str:
+    """<script> 블록을 걷어낸 마크업.
+
+    이 페이지는 OTP 관련 문구와 요소 id를 전부 스크립트 안에 유니코드 이스케이프로
+    담고 있다("인증번호를 입력"조차 \\uXXXX 형태로 들어 있다). 그래서 원문을 그대로
+    검색하면 로그인 전 페이지도 OTP 화면으로 오인된다. 실제로 OTP 단계에 들어갔다면
+    스크립트가 아니라 화면 마크업에 문구가 나타난다.
+    """
+    return SCRIPT_BLOCK_RE.sub(" ", html)
+
+
+def _describe_login_failure(html: str) -> str:
+    """로그인 실패 페이지에서 실제 사유를 뽑아낸다.
+
+    예전에는 `input_motp_rdo` 문자열이 보이면 무조건 "OTP 계정"이라고 단정했는데,
+    그 문자열은 로그인 전 SSO 페이지의 스크립트에도 항상 들어 있다. 그래서 비밀번호
+    오류든 폼 구조 변경이든 모든 실패가 OTP로 잘못 보고되어 원인 파악을 막았다.
+    """
+    visible = _decode_js_escapes(_visible_markup(html))
+
+    for pattern in _OTP_CHALLENGE_PATTERNS:
+        if pattern.search(visible):
+            return (
+                "추가 인증(OTP)이 필요한 계정으로 보입니다. "
+                "통합정보시스템에서 직접 확인해 주세요."
+            )
+
+    # 오류 메시지는 스크립트의 alert()로 오는 경우가 많으므로 원문에서 찾는다.
+    for pattern in _FAILURE_MESSAGE_PATTERNS:
+        match = pattern.search(_decode_js_escapes(html))
+        if match:
+            message = match.group(1).strip()
+            logger.warning("SSO 로그인 실패 메시지: %s", message)
+            return f"학교 시스템이 로그인을 거부했습니다: {message}"
+
+    logger.warning(
+        "SSO 로그인 실패 사유를 찾지 못했습니다. 응답 길이=%d, 폼=%s",
+        len(html),
+        [form["name"] for form in _collect_forms(html)],
+    )
+    return "학번 또는 비밀번호가 올바르지 않습니다."
+
+
 async def login(client: httpx.AsyncClient, student_id: str, password: str) -> None:
     """Completes SSO login so that `client`'s cookie jar holds a portal session."""
     entry = await client.get(PORTAL_ENTRY_URL)
@@ -163,12 +228,7 @@ async def login(client: httpx.AsyncClient, student_id: str, password: str) -> No
 
     # A rejected login re-renders the SSO form, so the password field is the signal.
     if 'name="user_password"' in response.text:
-        if "input_motp_rdo" in response.text:
-            raise SmulLoginError(
-                "추가 인증(OTP)이 설정된 계정은 자동 조회를 지원하지 않습니다. "
-                "통합정보시스템에서 직접 확인해 주세요."
-            )
-        raise SmulLoginError("학번 또는 비밀번호가 올바르지 않습니다.")
+        raise SmulLoginError(_describe_login_failure(response.text))
 
     response = await _follow_auto_submit_forms(client, response)
 
